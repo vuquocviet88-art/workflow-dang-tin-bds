@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -158,9 +157,8 @@ function extractDriveId(urlOrId: string): string | null {
   return null;
 }
 
-async function startServer() {
+export function createApp() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '10mb' }));
 
@@ -270,6 +268,7 @@ Phân tích toàn diện và trả về JSON theo đúng định dạng được
       });
 
       const parsed = JSON.parse(response.text || '{}');
+      res.json({ success: true, data: parsed });
     } catch (error: any) {
       console.warn('Gemini Analyze quota/error, activating Smart Pre-computed Analysis:', error?.message);
       const fallback = getFallbackAnalyze(req.body?.competitorInput || '');
@@ -2011,6 +2010,14 @@ Trả về JSON.`;
     res.json({ success: true, message: 'Đã xóa toàn bộ lịch sử test webhook.' });
   });
 
+  return app;
+}
+
+// Local entry (npm run dev / npm start). On Vercel the app is served by api/index.ts instead.
+async function startServer() {
+  const app = createApp();
+  const PORT = Number(process.env.PORT) || 3000;
+
   // Serve static files in production or Vite in dev
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
@@ -2018,6 +2025,7 @@ Trả về JSON.`;
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   } else {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -2030,6 +2038,8 @@ Trả về JSON.`;
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-});
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+  });
+}
