@@ -1,0 +1,6 @@
+{
+  "name": "Workflow Đăng Tin BĐS",
+  "description": "Workflow Đăng Tin BĐS - Quy trình tinh gọn cho sale soạn tin đa kênh Batdongsan.com.vn, Facebook, Zalo chuẩn SEO Vũ Việt Home.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

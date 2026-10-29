@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --forest: #1B3A2D;
+    --forest-mid: #2C5E4A;
+    --forest-dark: #152E24;
+    --ivory: #FBFAF5;
+    --beige: #F5F2E9;
+    --terra: #C95928;
+    --terra-dark: #A8471F;
+    --charcoal: #333333;
+    --heading: #1B3A2D;
+    --white: #FAFAF5;
+  }
+
+  body {
+    background-color: var(--ivory);
+    color: var(--charcoal);
+    font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, .font-serif-brand {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+  }
+}
+
+/* Custom VuVietHome Brand Utilities */
+.bg-forest {
+  background-color: #1B3A2D;
+}
+.bg-forest-mid {
+  background-color: #2C5E4A;
+}
+.bg-forest-dark {
+  background-color: #152E24;
+}
+.bg-ivory {
+  background-color: #FBFAF5;
+}
+.bg-beige {
+  background-color: #F5F2E9;
+}
+.bg-terra {
+  background-color: #C95928;
+}
+.bg-terra-dark {
+  background-color: #A8471F;
+}
+
+.text-forest {
+  color: #1B3A2D;
+}
+.text-forest-mid {
+  color: #2C5E4A;
+}
+.text-forest-dark {
+  color: #152E24;
+}
+.text-terra {
+  color: #C95928;
+}
+.text-terra-dark {
+  color: #A8471F;
+}
+.text-charcoal {
+  color: #333333;
+}
+.text-ivory {
+  color: #FBFAF5;
+}
+.text-beige {
+  color: #F5F2E9;
+}
+
+.border-forest {
+  border-color: #1B3A2D;
+}
+.border-forest-mid {
+  border-color: #2C5E4A;
+}
+.border-terra {
+  border-color: #C95928;
+}
+.border-beige {
+  border-color: #E8E2D4;
+}
