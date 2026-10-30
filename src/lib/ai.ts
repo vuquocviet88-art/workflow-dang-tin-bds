@@ -30,6 +30,11 @@ function schemaMode(): 'native' | 'prompt' {
   return baseUrl().includes('openrouter.ai') ? 'native' : 'prompt';
 }
 
+const JSON_ONLY_SYSTEM =
+  'Bạn là API trả dữ liệu có cấu trúc. Phản hồi của bạn CHỈ gồm một đối tượng JSON hợp lệ theo schema được cung cấp: ' +
+  'bắt đầu bằng { và kết thúc bằng }, không viết lời dẫn, không giải thích, không tính toán hay kiểm tra ngoài JSON, không dùng markdown. ' +
+  'Mọi xuống dòng bên trong chuỗi phải viết là \n và mọi dấu " bên trong chuỗi phải được escape.';
+
 interface GenerateParams {
   model: string;
   contents: string;
@@ -72,8 +77,28 @@ async function callAi(body: any, timeoutMs: number): Promise<{ ok: boolean; stat
   }
 }
 
-function stripJsonFence(text: string): string {
-  return text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+// Models sometimes wrap the JSON in a code fence or add a sentence before/after it.
+function extractJson(text: string): string {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  try {
+    JSON.parse(cleaned);
+    return cleaned;
+  } catch {
+    let parseError: string | undefined;
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      const candidate = cleaned.slice(start, end + 1);
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch (err: any) {
+        parseError = err?.message;
+      }
+    }
+    console.warn(`AI không trả JSON hợp lệ (${cleaned.length} ký tự, lỗi: ${parseError || 'không có khối { }'}). Đầu: ${cleaned.slice(0, 300)} ... Cuối: ${cleaned.slice(-300)}`);
+    throw new Error('AI không trả về JSON hợp lệ.');
+  }
 }
 
 async function generateContent({ model, contents, config, timeoutMs = 100_000 }: GenerateParams): Promise<{ text: string }> {
@@ -87,6 +112,7 @@ async function generateContent({ model, contents, config, timeoutMs = 100_000 }:
       {
         ...base,
         messages: [
+          ...(useSchema || !schema ? [] : [{ role: 'system', content: JSON_ONLY_SYSTEM }]),
           {
             role: 'user',
             content: useSchema || !schema
@@ -111,7 +137,7 @@ async function generateContent({ model, contents, config, timeoutMs = 100_000 }:
   }
   const content = res.data?.choices?.[0]?.message?.content;
   if (typeof content !== 'string' || !content.trim()) throw new Error('AI trả về nội dung rỗng.');
-  return { text: stripJsonFence(content) };
+  return { text: schema ? extractJson(content) : content.trim() };
 }
 
 export const ai = { models: { generateContent } };
