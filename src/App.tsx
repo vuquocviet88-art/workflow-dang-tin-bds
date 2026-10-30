@@ -13,6 +13,7 @@ import {
 } from './types';
 import { FOUR_VINHOMES_PROJECTS, ProjectPreset, SAMPLE_DRIVE_IMAGES, projectBaseForm } from './data/samplePresets';
 import type { MarketContext } from './lib/market';
+import { consumeHashImport } from './lib/importHash';
 import { 
   CheckCircle, 
   ExternalLink,
@@ -24,10 +25,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('research');
 
   // Currently selected project from the 4 Vinhomes projects
-  const [selectedProject, setSelectedProject] = useState<ProjectPreset>(FOUR_VINHOMES_PROJECTS[0]);
+  const [selectedProject, setSelectedProject] = useState<ProjectPreset>(
+    () => FOUR_VINHOMES_PROJECTS.find((p) => p.id === consumeHashImport().projectId) || FOUR_VINHOMES_PROJECTS[0]
+  );
 
   // Module 2 State: Project Form & Generated Listings
-  const [projectData, setProjectData] = useState<ProjectFormData>(projectBaseForm(FOUR_VINHOMES_PROJECTS[0]));
+  const [projectData, setProjectData] = useState<ProjectFormData>(() =>
+    projectBaseForm(FOUR_VINHOMES_PROJECTS.find((p) => p.id === consumeHashImport().projectId) || FOUR_VINHOMES_PROJECTS[0])
+  );
 
   // Real market data (scraped listings) summarised for the listing generator; null until the sale loads some.
   const [marketContext, setMarketContext] = useState<MarketContext | null>(null);
@@ -53,6 +58,11 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
+
+  React.useEffect(() => {
+    const imp = consumeHashImport();
+    if (imp.added > 0) showToast(`Đã nạp ${imp.added} tin thật từ trình duyệt vào dữ liệu thị trường.`);
+  }, []);
 
   const handleSelectProject = (project: ProjectPreset) => {
     if (project.id !== selectedProject.id) {
