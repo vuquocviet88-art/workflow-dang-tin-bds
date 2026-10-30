@@ -47,6 +47,7 @@ import {
 import { ProjectFormData, GeneratedListings, RawListingParsedResult } from '../types';
 import { KnowledgeBaseModal } from './KnowledgeBaseModal';
 import { getKnowledgeBase, matchAndInjectContext } from '../lib/knowledgeRouter';
+import type { MarketContext } from '../lib/market';
 
 interface ModuleContentCreatorProps {
   projectData: ProjectFormData;
@@ -55,6 +56,7 @@ interface ModuleContentCreatorProps {
   setListings: React.Dispatch<React.SetStateAction<GeneratedListings | null>>;
   selectedVersionType: 'investment' | 'family' | 'social';
   setSelectedVersionType: (type: 'investment' | 'family' | 'social') => void;
+  marketContext: MarketContext | null; // real market facts from the research tab (null = none loaded)
   onNextStep: () => void;
 }
 
@@ -65,6 +67,7 @@ export const ModuleContentCreator: React.FC<ModuleContentCreatorProps> = ({
   setListings,
   selectedVersionType,
   setSelectedVersionType,
+  marketContext,
   onNextStep,
 }) => {
   // Input raw text for sales - starts empty for clean paste
@@ -191,330 +194,37 @@ export const ModuleContentCreator: React.FC<ModuleContentCreatorProps> = ({
   };
 
 
-  // Local heuristic parser as immediate fallback
+  // Offline parser: fills ONLY what is literally written in the text. Everything else stays empty.
   const parseLocalHeuristic = (text: string): Partial<ProjectFormData> => {
     const lower = text.toLowerCase();
-    
-    // Project Name detection
-    let pName = 'Vinhomes Ocean Park 1';
-    if (lower.includes('ocean park 2') || lower.includes('the empire') || lower.includes('kinh đô') || lower.includes('sao biển') || lower.includes('đảo dừa') || lower.includes('chà là')) {
-      pName = 'Vinhomes Ocean Park 2 - The Empire';
-    } else if (lower.includes('ocean park 3') || lower.includes('the crown') || lower.includes('vịnh tây') || lower.includes('phố biển')) {
-      pName = 'Vinhomes Ocean Park 3 - The Crown';
-    } else if (lower.includes('hạ long xanh') || lower.includes('ha long')) {
-      pName = 'Vinhomes Hạ Long Xanh';
-    } else if (lower.includes('king park') || lower.includes('bắc ninh')) {
-      pName = 'Khu Đô Thị King Park Bắc Ninh';
-    } else if (lower.includes('olympic') || lower.includes('bắc giang')) {
-      pName = 'Khu Đô Thị Olympic Bắc Giang';
-    } else if (lower.includes('ha1') || lower.includes('hải âu')) {
-      pName = 'Vinhomes Ocean Park 1';
-    }
+    const out: Partial<ProjectFormData> = {};
 
-    // Unit Code & Subdivision
-    let unitCode = '';
-    const codeMatch = text.match(/(HA\d+-\d+|SB-?\d+|ĐD-?\d+|SH-?\d+|CL-?\d+|PB-?\d+|KĐ-?\d+|Căn\s+[A-Z0-9-]+)/i);
-    if (codeMatch) {
-      unitCode = codeMatch[1].replace(/Căn\s+/i, '').trim();
-    }
-    
-    let subdivision = '';
-    if (unitCode.startsWith('HA1') || lower.includes('hải âu 1') || lower.includes('hải âu')) {
-      subdivision = `Phân khu Hải Âu 1 ${unitCode ? `(${unitCode})` : ''}`.trim();
-    } else if (unitCode.startsWith('SB') || lower.includes('sao biển')) {
-      subdivision = `Phân khu Sao Biển ${unitCode ? `(${unitCode})` : ''}`.trim();
-    } else if (unitCode.startsWith('ĐD') || lower.includes('đảo dừa')) {
-      subdivision = `Phân khu Đảo Dừa ${unitCode ? `(${unitCode})` : ''}`.trim();
-    } else {
-      subdivision = unitCode ? `Căn ${unitCode}` : 'Phân khu trung tâm';
-    }
+    if (lower.includes('ocean park 2') || lower.includes('the empire')) out.projectName = 'Vinhomes Ocean Park 2 - The Empire';
+    else if (lower.includes('ocean park 3') || lower.includes('the crown')) out.projectName = 'Vinhomes Ocean Park 3 - The Crown';
+    else if (lower.includes('hạ long xanh') || lower.includes('ha long')) out.projectName = 'Vinhomes Hạ Long Xanh';
+    else if (lower.includes('king park')) out.projectName = 'Khu Đô Thị King Park Bắc Ninh';
+    else if (lower.includes('olympic')) out.projectName = 'Đại Đô Thị Vinhomes Olympic Hà Nội';
+    else if (lower.includes('ocean park 1')) out.projectName = 'Vinhomes Ocean Park 1';
 
-    // Property Type
-    let pType = 'Liền kề';
-    if (lower.includes('shophouse') || lower.includes('thương mại')) {
-      pType = 'Shophouse thương mại';
-    } else if (lower.includes('song lập')) {
-      pType = 'Biệt thự song lập';
-    } else if (lower.includes('đơn lập')) {
-      pType = 'Biệt thự đơn lập';
-    } else if (lower.includes('căn hộ') || lower.includes('chung cư')) {
-      pType = 'Căn hộ chung cư';
-    } else if (lower.includes('liền kề') || lower.includes('lk')) {
-      pType = 'Liền kề';
-    }
+    const codeMatch = text.match(/(HA\d+-\d+|SB-?\d+-?\d*|ĐD-?\d+|CL-?\d+|PB-?\d+|KĐ-?\d+)/i);
+    if (codeMatch) out.unitCode = codeMatch[1];
 
-    // Area
-    let area = '56';
-    const areaMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:m2|m²)/i);
-    if (areaMatch) {
-      area = areaMatch[1];
-    }
+    if (lower.includes('shophouse')) out.propertyType = 'Shophouse';
+    else if (lower.includes('song lập')) out.propertyType = 'Biệt thự song lập';
+    else if (lower.includes('đơn lập')) out.propertyType = 'Biệt thự đơn lập';
+    else if (lower.includes('liền kề') || /\blk\b/.test(lower)) out.propertyType = 'Liền kề';
 
-    // Price
-    let price = '7 tỷ';
-    const priceMatch = text.match(/(?:giá\s*[:\s]*)?(\d+(?:[.,]\d+)?\s*(?:tỷ|ty|tr|triệu)[^\n,]*)/i);
-    if (priceMatch) {
-      price = priceMatch[1].trim();
-      if (!price.toLowerCase().startsWith('giá')) {
-        // e.g. "7 tỷ bao phí sang tên"
-      }
-    }
-
-    // Frontage
-    let frontage = '';
+    const areaMatch = text.match(/(\d+(?:[.,]\d+)?)\s*(?:m2|m²)/i);
+    if (areaMatch) out.area = areaMatch[1];
+    const priceMatch = text.match(/(\d+(?:[.,]\d+)?\s*(?:tỷ|ty|triệu|tr)\b[^\n,]*)/i);
+    if (priceMatch) out.price = priceMatch[1].trim();
     const ftMatch = text.match(/(?:mặt tiền|mt)\s*[:\s]*([^\n,-]+)/i);
-    if (ftMatch) {
-      frontage = ftMatch[1].trim();
-    }
-
-    // Orientation
-    let orientation = '';
-    const dirMatch = text.match(/(?:hướng)\s*[:\s]*([a-zA-Zà-ỹ\s]+)/i);
-    if (dirMatch) {
-      orientation = dirMatch[1].trim().split(/[\n,.-]/)[0].trim();
-    }
-
-    // Floors
-    let floors = '';
-    const flMatch = text.match(/(?:xây\s*)?(\d+\s*tầng[^\n,]*)/i);
-    if (flMatch) {
-      floors = flMatch[1].trim();
-    }
-
-    // Construction Area
-    let constructionArea = '';
-    const caMatch = text.match(/(?:xây dựng|tổng dtsx?d?|sàn)\s*[:\s]*(\d+(?:\.\d+)?\s*(?:m2|m²))/i);
-    if (caMatch) {
-      constructionArea = caMatch[1].trim();
-    }
-
-    // Legal
-    let legal = 'Sổ đỏ sẵn có sang tên ngay';
-    if (lower.includes('sổ đỏ') || lower.includes('so do')) {
-      legal = 'Sổ đỏ chính chủ, sẵn sàng công chứng';
-      if (lower.includes('vay bank') || lower.includes('tất toán')) {
-        legal = 'Sổ đỏ sẵn có (chủ nhà tự tất toán giải chấp ngân hàng)';
-      }
-    }
-
-    return {
-      projectName: pName,
-      subdivision,
-      unitCode,
-      propertyType: pType,
-      area,
-      price,
-      frontage: frontage || '4mx14m',
-      orientation: orientation || 'Tây Bắc',
-      floors: floors || 'Xây 5 tầng, liền kề có ban công',
-      constructionArea: constructionArea || '224.3m²',
-      legal,
-      amenities: 'Ngay gần 10 tòa chung cư, công viên Silk Park, Vincom Mega Mall, trường Vinschool, ngã tư kinh doanh sầm uất',
-      keyHighlights: 'Sát căn góc ngã tư kinh doanh được ngay, thiết kế 5 phòng ngủ, bếp, WC, sân sau thoáng mát, sẵn ảnh sổ đỏ & ảnh chụp thực tế',
-    };
-  };
-
-  // Helper: Format strictly compliant titles: 90 - 99 characters (NEVER exceeds 99 characters!)
-  const formatStrict99Title = (raw: string, projectName: string): string => {
-    let text = (raw || '')
-      .replace(/[\r\n\t]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .replace(/[^\w\s\dà-ỹÀ-Ỹ.,/()\-+]/g, '')
-      .trim();
-
-    const cleanProjectName = projectName ? projectName.trim() : 'Vinhomes';
-    const suffix = ` - ${cleanProjectName}`;
-
-    // 1. If longer than 99 characters: truncate prefix safely keeping project suffix
-    if (text.length > 99) {
-      if (text.includes(suffix)) {
-        const allowedPrefixLen = 99 - suffix.length;
-        if (allowedPrefixLen >= 20) {
-          let prefix = text.split(suffix)[0].trim();
-          prefix = prefix.slice(0, allowedPrefixLen).trim().replace(/[, \-]+$/, '');
-          text = `${prefix}${suffix}`;
-        } else {
-          text = text.slice(0, 99).trim().replace(/[, \-]+$/, '');
-        }
-      } else {
-        text = text.slice(0, 99).trim().replace(/[, \-]+$/, '');
-      }
-    }
-
-    // 2. If shorter than 90 characters: pad smoothly with real-estate keyword phrases, never exceeding 99
-    const fillers = ['đẹp', 'chính chủ', 'kinh doanh tốt', 'sổ đỏ sẵn có', 'vị trí đắc địa'];
-    let idx = 0;
-    while (text.length < 90 && idx < fillers.length) {
-      const phrase = fillers[idx++];
-      if (text.includes(suffix)) {
-        const candidate = text.replace(suffix, ` ${phrase}${suffix}`);
-        if (candidate.length <= 99) {
-          text = candidate;
-        }
-      } else {
-        const candidate = `${text} ${phrase}`;
-        if (candidate.length <= 99) {
-          text = candidate;
-        }
-      }
-    }
-
-    // 3. Absolute clamp guarantee: MUST be <= 99 characters
-    if (text.length > 99) {
-      text = text.slice(0, 99).trim().replace(/[, \-]+$/, '');
-    }
-
-    return text;
-  };
-
-  // Client-Side Deterministic Rulebook Listings Generator (Guarantees zero-error under high demand spikes)
-  const generateClientFallbackListings = (data: ProjectFormData, voice: 'le_yen' | 'vu_viet'): GeneratedListings => {
-    const pName = data.projectName || 'Vinhomes Ocean Park 1';
-    const sub = data.subdivision || 'Phân khu Hải Âu 1 (HA1-95)';
-    const pType = data.propertyType.toLowerCase().includes('liền kề') ? 'căn LK' : data.propertyType || 'căn LK';
-    const pArea = `${data.area}`.replace(/m2|m²/i, '').trim() || '56';
-    const pPrice = data.price.toLowerCase().startsWith('giá') ? data.price : `Giá ${data.price.replace(/bao phí.*/i, '').trim()}` || 'Giá 7 tỷ';
-    const pFront = data.frontage ? `MT ${data.frontage.replace(/mặt tiền|mt/i, '').trim()}` : 'MT thoáng';
-    const pDir = data.orientation ? `hướng ${data.orientation}` : 'hướng Tây Bắc';
-    const cleanSub = sub.replace(/\(.*\)/, '').trim() || sub;
-
-    const contact = data.contactName || (voice === 'le_yen' ? 'Ms Yến' : 'Mr Việt');
-    const tel = data.phone || (voice === 'le_yen' ? '0918 600 050' : '090.223.5050');
-
-    // Build exactly 3 suggested titles, strictly formatted to 90-99 characters (never > 99)
-    const baseTitle1 = `${pPrice} ${pType} ${cleanSub} ${pArea}m2 ${pDir} ${pFront} xây 5 tầng - ${pName}`;
-    const baseTitle2 = `${pPrice} ${pType} ${cleanSub} ${pArea}m2 ${pFront} sát ngã tư kinh doanh - ${pName}`;
-    const baseTitle3 = `${pPrice} căn nhà ${pType} ${cleanSub} ${pArea}m2 ${pDir} có ban công - ${pName}`;
-
-    const suggestedTitles = [
-      formatStrict99Title(baseTitle1, pName),
-      formatStrict99Title(baseTitle2, pName),
-      formatStrict99Title(baseTitle3, pName),
-    ];
-    const title1 = suggestedTitles[0];
-
-    const isLeYen = voice === 'le_yen';
-    const line1_2 = isLeYen
-      ? `Chính chủ gửi bán gấp căn ${pType} ${cleanSub} ${pArea}m² sát ngay căn góc ngã tư, đối diện 10 tòa chung cư sầm uất, vị trí cực kỳ đắc địa vừa ở vừa kinh doanh sinh lời cao tại ${pName}.`
-      : `Bán căn ${pType} ${cleanSub} ${pArea}m² vị trí kinh doanh ngay sát căn góc ngã tư, đối diện 10 tòa chung cư tại ${pName}, sổ đỏ sẵn có sang tên ngay.`;
-
-    const line3 = isLeYen
-      ? `Miễn phí môi giới. LH E Yến - ${tel} (zalo, imess)`
-      : `Miễn phí môi giới và tư vấn. LH Mr Việt - ${tel} (zalo)`;
-
-    const line4 = `Thông tin cụ thể như sau:`;
-
-    // Match exact amenities and subdivision from Knowledge Base
-    const ctx = matchAndInjectContext({
-      projectName: pName,
-      subdivision: sub,
-      propertyType: pType,
-      area: pArea,
-      price: pPrice,
-      amenities: data.amenities,
-    });
-    const amenityPoint1 = ctx.matchedAmenities[0] || 'Gần công viên trung tâm';
-    const amenityPoint2 = ctx.matchedAmenities[1] || 'Gần Vincom Mega Mall & Vinschool';
-
-    const clusters = [
-      `- Diện tích đất: ${pArea}m²\n- Mặt tiền ${data.frontage || '4mx14m'}, ${data.floors || 'xây 5 tầng'}\n- Tổng diện tích sàn: ${data.constructionArea || '224.3m²'}\n- Hướng nhà: ${data.orientation || 'Tây Bắc'} thoáng mát`,
-      `- Thiết kế 5 phòng ngủ rộng rãi\n- Đầy đủ phòng bếp, WC từng tầng\n- Có ban công và sân vườn nhỏ phía sau`,
-      `- Ngay sát trục đường chính\n- ${amenityPoint1.slice(0, 36)}\n- ${amenityPoint2.slice(0, 36)}`,
-      `- Phù hợp gia đình mua để ở\n- Kết hợp kinh doanh buôn bán ngay\n- Dễ dàng cho thuê dòng tiền ổn định`,
-      `- Sổ đỏ sẵn có sang tên công chứng\n- Chủ nhà tự tất toán ngân hàng\n- ${pPrice} (bao toàn bộ chi phí sang tên)`,
-    ];
-
-    const closing = isLeYen
-      ? `Liên hệ: Ms Yến - ${tel} để xem thực tế và tư vấn cụ thể về pháp lý thủ tục. Trân trọng cảm ơn quý khách hàng đã đọc tin!`
-      : `Liên hệ: Mr Việt - ${tel} để em gửi bản đồ quy hoạch và tư vấn cụ thể. Cảm ơn anh chị đã đọc tin!`;
-
-    const batdongsanContent = `${line1_2}\n\n${line3}\n${line4}\n\n${clusters.join('\n\n')}\n\n${closing}`;
-
-    const zaloTitle = `🌟 [XÁC THỰC] CĂN ${cleanSub.toUpperCase()} ${pArea}M² - GIÁ ${pPrice.toUpperCase()}`;
-    const zaloContent = `🌟 SIÊU PHẨM ${pType.toUpperCase()} ${cleanSub.toUpperCase()} - ${pName.toUpperCase()}
-📍 Vị trí vàng: Sát căn góc ngã tư, sát 10 tòa chung cư, gần công viên Silk Park & Vincom
-
-📐 Thông số vàng:
-• Diện tích: ${pArea}m² (${data.frontage || '4mx14m'})
-• Xây dựng: 5 tầng (${data.constructionArea || '224.3m²'})
-• Hướng: ${data.orientation || 'Tây Bắc'} mát mẻ
-• Công năng: 5 phòng ngủ, bếp, WC, sân sau
-
-💰 Giá bán: ${pPrice} (Bao toàn bộ thuế phí)
-📕 Pháp lý: Sổ đỏ chính chủ (sẵn sàng công chứng)
-📸 Sẵn ảnh sổ đỏ và ảnh chụp thực tế hôm qua gửi riêng anh/chị
-
-📲 Kết nối Zalo / Gọi trực tiếp: ${contact} - ${tel} để nhận trọn bộ hồ sơ và xem nhà ngay hôm nay!`;
-
-    const fbTitle = `🔥 CƠ HỘI SỞ HỮU ${pType.toUpperCase()} SÁT CĂN GÓC ĐỐI DIỆN 10 TÒA CHUNG CƯ TẠI ${pName.toUpperCase()}!`;
-    const fbContent = `🔥 CƠ HỘI SỞ HỮU ${pType.toUpperCase()} SÁT CĂN GÓC KINH DOANH ĐƯỢC NGAY TẠI ${pName.toUpperCase()}!
-
-Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể tự kinh doanh hoặc cho thuê dòng tiền sầm uất thì không thể bỏ qua căn này:
-
-✨ THÔNG TIN CHI TIẾT:
-- Vị trí: ${cleanSub}, ngay sát ngã tư, cách 10 tòa chung cư chỉ vài bước chân
-- Diện tích đất: ${pArea}m² | Mặt tiền ${data.frontage || '4mx14m'}
-- Xây 5 tầng kiên cố, tổng DTSXD ${data.constructionArea || '224.3m²'}
-- Thiết kế 5 phòng ngủ, phòng khách, bếp, WC từng tầng, ban công thoáng mát và vườn nhỏ sau nhà
-- Hướng ${data.orientation || 'Tây Bắc'} đón lộc
-- Liền kề công viên Silk Park, TTTM Vincom Mega Mall, trường liên cấp Vinschool
-
-💎 GIÁ BÁN & PHÁP LÝ:
-- Giá cực tốt: ${pPrice} (bao trọn gói phí sang tên)
-- Sổ đỏ lâu dài (chủ nhà tự chủ tài chính tất toán bank)
-
-📞 Anh chị quan tâm liên hệ em ${contact} - ${tel} để đi xem thực tế và thương lượng trực tiếp chủ nhà!
-
-#${pName.replace(/[\s-]+/g, '')} #${cleanSub.replace(/[\s()-]+/g, '')} #BatDongSanVuViet #${contact.replace(/\s+/g, '')} #NhaDepGiaTot`;
-
-    return {
-      suggestedTitles,
-      versionInvestment: {
-        title: title1,
-        content: batdongsanContent,
-        summaryHighlights: [
-          `DT: ${pArea}m² (${data.frontage || '4mx14m'})`,
-          `Giá: ${pPrice}`,
-          `Sát ngã tư đối diện 10 tòa CC`,
-          `Sổ đỏ chính chủ sẵn sàng`,
-        ],
-      },
-      versionFamily: {
-        title: zaloTitle,
-        content: zaloContent,
-        summaryHighlights: [
-          `Tối ưu gửi Zalo & Nhật ký VIP`,
-          `Sẵn ảnh sổ đỏ và ảnh chụp thực tế`,
-          `Đầy đủ thông số 5 phòng ngủ`,
-          `Call to action Zalo trực tiếp`,
-        ],
-      },
-      versionSocial: {
-        title: fbTitle,
-        content: fbContent,
-        summaryHighlights: [
-          `Định dạng chuẩn Facebook Group`,
-          `Hook kinh doanh đối diện 10 tòa chung cư`,
-          `Gợi mở bài toán dòng tiền & an cư`,
-          `Bộ hashtag chuẩn SEO Facebook`,
-        ],
-      },
-      seoMeta: {
-        metaDescription: `Bán căn ${pType} ${cleanSub} ${pArea}m2 ${pDir} ${pPrice} tại ${pName}. Sát căn góc kinh doanh, gần 10 tòa chung cư, sổ đỏ chính chủ. LH ${tel}.`,
-        focusKeywords: [
-          pName,
-          `${pType} ${cleanSub}`,
-          `mua bán ${pName}`,
-          `bán nhà ${cleanSub}`,
-        ],
-        hashtags: [
-          `#${pName.replace(/[\s-]+/g, '')}`,
-          `#${cleanSub.replace(/[\s()-]+/g, '')}`,
-          `#VuVietProperty`,
-          `#BatDongSan`,
-        ],
-      },
-    };
+    if (ftMatch) out.frontage = ftMatch[1].trim();
+    const dirMatch = text.match(/hướng\s*[:\s]*([a-zA-Zà-ỹ\s]+)/i);
+    if (dirMatch) out.orientation = dirMatch[1].trim().split(/[\n,.-]/)[0].trim();
+    const flMatch = text.match(/(\d+\s*tầng[^\n,]*)/i);
+    if (flMatch) out.floors = flMatch[1].trim();
+    return out;
   };
 
   // Trigger AI Raw Property Parser
@@ -573,7 +283,7 @@ Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể t�
           ...prev,
           ...fallback,
         }));
-        setParseFeedback(`AI đã tự động phân tích và điền các thông số căn nhà.`);
+        setParseFeedback('AI chưa phản hồi: chỉ điền các trường có sẵn trong ghi chú. Hãy kiểm tra và nhập nốt phần còn trống.');
       }
     } catch (err: any) {
       console.warn('Parser API fallback to local:', err);
@@ -582,7 +292,7 @@ Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể t�
         ...prev,
         ...fallback,
       }));
-      setParseFeedback(`Đã tự động nhận diện và điền các thông số từ ghi chú.`);
+      setParseFeedback('Không kết nối được AI: chỉ điền các trường có sẵn trong ghi chú. Hãy kiểm tra và nhập nốt phần còn trống.');
     } finally {
       setParsingLoading(false);
     }
@@ -603,10 +313,16 @@ Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể t�
     setDismissedQuestions((prev) => [...prev, fieldKey]);
   };
 
-  // Main Generation: Soạn 3 Phiên Bản (Batdongsan, Zalo, Facebook)
+  // Main Generation: Soạn 3 Phiên Bản (Batdongsan, Zalo, Facebook).
+  // If the AI fails we show the error. We never substitute template text: it would state facts about a house that does not exist.
   const handleGenerate = async () => {
-    if (!projectData.projectName.trim() || !projectData.price.trim()) {
-      setError('Vui lòng kiểm tra lại: Tên dự án và Mức giá bán là bắt buộc (*).');
+    const missing = [
+      !projectData.projectName.trim() && 'Tên dự án',
+      !projectData.area.trim() && 'Diện tích',
+      !projectData.price.trim() && 'Mức giá bán',
+    ].filter(Boolean);
+    if (missing.length) {
+      setError(`Vui lòng nhập: ${missing.join(', ')} (bắt buộc *).`);
       return;
     }
 
@@ -620,24 +336,15 @@ Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể t�
         body: JSON.stringify({
           ...projectData,
           personaVoice: activeVoice,
+          marketContext,
         }),
       });
-
-      const data = await resp.json();
-      if (resp.ok && data.data) {
-        setListings(data.data);
-      } else {
-        // High-demand or server error fallback
-        console.warn('Backend returned non-200, activating client Rulebook Generator:', data?.error);
-        const fallback = generateClientFallbackListings(projectData, activeVoice);
-        setListings(fallback);
-      }
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.data) throw new Error(data?.error || `Lỗi ${resp.status}`);
+      setListings(data.data);
       setSimTab('preview_bds');
     } catch (err: any) {
-      console.warn('Network or API issue, activating client Rulebook Generator:', err?.message);
-      const fallback = generateClientFallbackListings(projectData, activeVoice);
-      setListings(fallback);
-      setSimTab('preview_bds');
+      setError(err?.message || 'Không soạn được tin. Hãy thử lại.');
     } finally {
       setLoading(false);
     }
@@ -1170,7 +877,16 @@ Pháp lý : Sổ đỏ có vay bank nhưng chủ nhà tự tất toán được.
             {/* ========================================================================= */}
             {/* NÚT BẤM SOẠN TIN ĐĂNG (CẢ 3 PHIÊN BẢN: BATDONGSAN, ZALO, FACEBOOK) */}
             {/* ========================================================================= */}
-            <div className="pt-2">
+            <div className="pt-2 space-y-2">
+              <div
+                className={`text-xs sm:text-sm px-3 py-2 rounded-xl border ${
+                  marketContext ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-600'
+                }`}
+              >
+                {marketContext
+                  ? `Đang dùng dữ liệu thị trường thật: ${marketContext.rowCount} tin Batdongsan, quét lúc ${marketContext.scrapedAt}.`
+                  : 'Chưa có dữ liệu thị trường thật (làm ở bước 1). Tin sẽ không so sánh với thị trường.'}
+              </div>
               <button
                 type="button"
                 onClick={handleGenerate}
@@ -1338,6 +1054,22 @@ Pháp lý : Sổ đỏ có vay bank nhưng chủ nhà tự tất toán được.
                   >
                     <X className="w-4 h-4" />
                   </button>
+                </div>
+              )}
+
+              {listings && listings.warnings && listings.warnings.length > 0 && (
+                <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-900 text-sm space-y-1.5">
+                  <strong>Cần kiểm tra trước khi đăng:</strong>
+                  <ul className="list-disc list-inside space-y-1">
+                    {listings.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {listings && (!listings.warnings || listings.warnings.length === 0) && (
+                <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm">
+                  Đã đối chiếu: mọi con số trong tin đều có trong dữ liệu căn, kho dự án hoặc dữ liệu thị trường thật.
                 </div>
               )}
 

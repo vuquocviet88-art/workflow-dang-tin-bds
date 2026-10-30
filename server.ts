@@ -4,7 +4,15 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { ai, Type, hasAiKey, DEFAULT_AI_MODEL } from './src/lib/ai.js';
-import { FOUR_VINHOMES_PROJECTS, DEFAULT_COMPETITOR_PLAYBOOKS } from './src/data/samplePresets.js';
+import {
+  computeMarketData,
+  groupByProduct,
+  bucketStats,
+  tierCounts,
+  brokerStats,
+  type ListingRow,
+} from './src/lib/market.js';
+import { checkListing, unsupportedFigures } from './src/lib/validate.js';
 import { 
   matchAndInjectContext, 
   getAllKnowledgeBases, 
@@ -18,102 +26,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // AI goes through OpenRouter (see src/lib/ai.ts). Model is configurable via AI_MODEL.
 const AI_MODEL = process.env.AI_MODEL || DEFAULT_AI_MODEL;
-
-// Fallback helper for Market Research when the AI call fails or hits quota
-function getFallbackMarketData(projectName: string, pageScope: string = '3_pages') {
-  const norm = (projectName || '').toLowerCase();
-  let matchedPreset = FOUR_VINHOMES_PROJECTS[0];
-  if (norm.includes('hạ long') || norm.includes('ha long') || norm.includes('quảng yên') || norm.includes('quang ninh')) {
-    matchedPreset = FOUR_VINHOMES_PROJECTS.find(p => p.id === 'ha-long-xanh') || FOUR_VINHOMES_PROJECTS[2];
-  } else if (norm.includes('ocean park 3') || norm.includes('the crown') || norm.includes('vịnh tây') || norm.includes('phố biển')) {
-    matchedPreset = FOUR_VINHOMES_PROJECTS.find(p => p.id === 'ocean-park-3') || FOUR_VINHOMES_PROJECTS[1];
-  } else if (norm.includes('olympic') || norm.includes('đan phượng')) {
-    matchedPreset = FOUR_VINHOMES_PROJECTS.find(p => p.id === 'olympic') || FOUR_VINHOMES_PROJECTS[3];
-  } else if (norm.includes('ocean park 2') || norm.includes('the empire') || norm.includes('sao biển') || norm.includes('chà là')) {
-    matchedPreset = FOUR_VINHOMES_PROJECTS.find(p => p.id === 'ocean-park-2') || FOUR_VINHOMES_PROJECTS[0];
-  } else {
-    const byName = FOUR_VINHOMES_PROJECTS.find(p => norm.includes(p.name.toLowerCase()));
-    if (byName) matchedPreset = byName;
-  }
-
-  const raw = JSON.parse(JSON.stringify(matchedPreset.marketData));
-  raw.projectName = projectName || matchedPreset.name;
-  raw.pageScope = pageScope;
-  raw.scannedAt = 'Cập nhật trực tiếp: ' + new Date().toLocaleTimeString('vi-VN') + ' - ' + new Date().toLocaleDateString('vi-VN');
-  return raw;
-}
-
-// Fallback helper for Competitor Playbook when the AI call fails or hits quota
-function getFallbackCompetitorPlaybook(projectName: string, competitorName?: string, competitorUrl?: string) {
-  const norm = (projectName || '').toLowerCase();
-  let key = 'ocean-park-2';
-  if (norm.includes('hạ long') || norm.includes('ha long') || norm.includes('quảng yên')) {
-    key = 'ha-long-xanh';
-  } else if (norm.includes('ocean park 3') || norm.includes('the crown')) {
-    key = 'ocean-park-3';
-  } else if (norm.includes('olympic') || norm.includes('đan phượng')) {
-    key = 'olympic';
-  } else if (norm.includes('ocean park 2') || norm.includes('the empire')) {
-    key = 'ocean-park-2';
-  }
-
-  const playbook = JSON.parse(JSON.stringify(DEFAULT_COMPETITOR_PLAYBOOKS[key] || DEFAULT_COMPETITOR_PLAYBOOKS['ocean-park-2']));
-  if (competitorName && competitorName.trim()) {
-    playbook.competitorName = competitorName.trim();
-  }
-  if (competitorUrl && competitorUrl.trim()) {
-    playbook.competitorUrl = competitorUrl.trim();
-  }
-  playbook.analyzedAt = new Date().toLocaleTimeString('vi-VN') + ' - ' + new Date().toLocaleDateString('vi-VN');
-  return playbook;
-}
-
-// Fallback helper for single listing research analysis
-function getFallbackAnalyze(competitorInput: string) {
-  return {
-    summary: 'Bài đăng tập trung vào phân khúc bất động sản cao cấp với điểm nhấn về vị trí đắc địa, pháp lý minh bạch và tiềm năng sinh lời cao.',
-    keywords: [
-      { term: 'liền kề giá tốt', type: 'primary', reason: 'Nhu cầu tìm kiếm cao' },
-      { term: 'sổ đỏ chính chủ', type: 'intent', reason: 'Tạo niềm tin chốt cọc' },
-      { term: 'hạ tầng kết nối', type: 'secondary', reason: 'Yếu tố gia tăng lãi vốn' },
-      { term: 'kinh doanh sầm uất', type: 'intent', reason: 'Khai thác dòng tiền' },
-      { term: 'vị trí đắc địa', type: 'geo', reason: 'Định vị khu vực' }
-    ],
-    titleStructure: {
-      currentStructure: 'Cấu trúc thông tin cơ bản: Giá + Loại hình + Vị trí',
-      strengths: ['Rõ ràng mức giá', 'Đầy đủ pháp lý'],
-      weaknesses: ['Chưa dồn nén đủ 6 thành phần', 'Thiếu tính giật tít thu hút click'],
-      highConvertingFormulas: [
-        'Giá [Giá] căn LK [Phân khu] [Diện tích]m2 [Hướng] MT [Mặt tiền] - [Dự án]',
-        'Bán gấp căn [Loại hình] [Phân khu] [Diện tích]m2 sổ đỏ giá sốc [Giá] - [Dự án]',
-        'Chính chủ gửi bán [Loại hình] [Phân khu] [Diện tích]m2 sát góc [Giá] - [Dự án]'
-      ]
-    },
-    salesAngles: {
-      primaryAngle: 'Khác biệt hóa với dòng tiền thật và pháp lý minh bạch',
-      uspPoints: ['Sổ đỏ sẵn có công chứng trong ngày', 'Vị trí sát trục đường lớn kinh doanh'],
-      financialHooks: ['Hỗ trợ vay 70%', 'Đơn giá cạnh tranh nhất phân khu'],
-      urgencyTactics: ['Suất ngoại giao duy nhất trong tuần', 'Giá bán chốt nhanh'],
-      lifestyleHooks: ['Gần công viên, trường học, không gian thoáng đãng']
-    },
-    proposedOutline: [
-      { sectionTitle: '1. Hook Mở Đầu', purpose: 'Thu hút sự chú ý', suggestedContent: 'Dồn nén thông số vàng và vị trí đắc địa' },
-      { sectionTitle: '2. Thông Số Chi Tiết', purpose: 'Cung cấp dữ liệu minh bạch', suggestedContent: 'Diện tích, mặt tiền, số tầng, hướng nhà' },
-      { sectionTitle: '3. Tiện Ích & Liên Kết', purpose: 'Nâng tầm giá trị sống', suggestedContent: 'Kết nối công viên, trung tâm thương mại' },
-      { sectionTitle: '4. Pháp Lý & Giá Bán', purpose: 'Xóa tan nghi ngại', suggestedContent: 'Sổ đỏ cầm tay, giá bao thuế phí' },
-      { sectionTitle: '5. Kêu Gọi Hành Động', purpose: 'Chốt hẹn dẫn khách', suggestedContent: 'Liên hệ xem nhà và kiểm tra sổ đỏ thực tế' }
-    ],
-    keyExtractedData: {
-      projectName: 'Vinhomes',
-      subdivision: 'Phân khu trung tâm',
-      propertyType: 'Liền kề / Shophouse',
-      area: '65',
-      price: 'Giá tốt',
-      address: 'Khu đô thị sinh thái',
-      legal: 'Sổ đỏ sở hữu lâu dài'
-    }
-  };
-}
 
 // In-memory test webhook logs for internal testing
 interface WebhookLog {
@@ -261,158 +173,77 @@ Phân tích toàn diện và trả về JSON theo đúng định dạng được
       const parsed = JSON.parse(response.text || '{}');
       res.json({ success: true, data: parsed });
     } catch (error: any) {
-      console.warn('AI Analyze quota/error, activating Smart Pre-computed Analysis:', error?.message);
-      const fallback = getFallbackAnalyze(req.body?.competitorInput || '');
-      res.json({
-        success: true,
-        data: fallback,
-        isQuotaFallback: true,
-        notice: 'Đang hiển thị phân tích chiến lược từ kho dữ liệu thực tế (Chế độ dự phòng khi AI đạt giới hạn ngạch).',
-      });
+      console.warn('AI Analyze error:', error?.message);
+      res.status(502).json({ error: `AI chưa phản hồi được (${error?.message || 'lỗi không rõ'}). Hãy thử lại.` });
     }
   });
 
-  // 1B. Market Research & Batdongsan.com.vn Page 1-3 Deep Analysis Endpoint
-  app.post('/api/gemini/analyze-market', async (req, res) => {
+  // 1B. Market narrative. Every NUMBER comes from the real rows (src/lib/market.ts); the AI only writes wording.
+  app.post('/api/market/narrative', async (req, res) => {
     try {
-      const { projectName, batdongsanUrl, customInput, pageScope = '3_pages' } = req.body;
-      if (!projectName) {
-        return res.status(400).json({ error: 'Tên dự án không được để trống.' });
+      const { projectName, batdongsanUrl, scrapedAt, rows: rawRows } = req.body;
+      if (!Array.isArray(rawRows) || rawRows.length === 0) {
+        return res.status(400).json({ error: 'Chưa có dữ liệu thật. Hãy quét trang batdongsan bằng bookmarklet và dán dữ liệu vào trước.' });
       }
+      const rows = (rawRows as ListingRow[]).slice(0, 300);
+      const meta = { projectName: projectName || 'Dự án', batdongsanUrl: batdongsanUrl || '', scrapedAt: scrapedAt || '' };
+      const computed = computeMarketData(rows, meta);
+      const topTitles = rows
+        .filter((r) => r.tier === 'diamond' || r.tier === 'gold')
+        .slice(0, 12)
+        .map((r) => `[${r.tier}] ${r.title} | ${r.price} | ${r.area}`);
+      const otherTitles = rows
+        .filter((r) => r.tier !== 'diamond' && r.tier !== 'gold')
+        .slice(0, 8)
+        .map((r) => `[${r.tier}] ${r.title} | ${r.price} | ${r.area}`);
+      const facts = {
+        project: meta.projectName,
+        totalListings: computed.totalListingsCount,
+        pages: computed.dataSource?.pages,
+        tiers: { diamond: computed.vipStats.vipDiamond, gold: computed.vipStats.vipGold, silver: computed.vipStats.vipSilver, normal: computed.vipStats.normal, vipPercentage: computed.vipStats.vipPercentage },
+        pagesBreakdown: computed.pagesBreakdown?.map((p) => ({ page: p.pageNumber, note: p.keyCharacteristics })),
+        products: computed.productsAndPricing,
+        contentCategories: computed.contentCategories.map((c) => ({ name: c.categoryName, count: c.count, percentage: c.percentage, topKeywords: c.topKeywords })),
+        topBrokers: computed.top5Brokers.map((b) => ({ name: b.name, listings: b.totalListings })),
+        proposedProducts: computed.recommendations.map((r) => ({ id: r.id, type: r.productType, listings: r.productName, priceRange: r.priceEstimate, areaRange: r.area, typicalTitleFromData: r.sampleTitleBDS })),
+      };
 
-      const scopeText = pageScope === '1_page' 
-        ? 'Trang số 1 (30 tin top đầu)' 
-        : pageScope === '2_pages' 
-        ? 'Top 2 Trang đầu tiên (60 tin)' 
-        : 'Top 3 Trang đầu tiên (90 tin)';
+      const prompt = `Bạn là chuyên gia phân tích thị trường BĐS Việt Nam. Dưới đây là DỮ LIỆU THẬT do người dùng quét từ batdongsan.com.vn (đã được máy tính thống kê sẵn).
 
-      const prompt = `Bạn là Chuyên gia Nghiên cứu & Phân tích Dữ liệu Thị trường Bất Động Sản hàng đầu tại Việt Nam.
-Hãy phân tích toàn diện ${scopeText} trên sàn batdongsan.com.vn cho dự án: "${projectName}"
-Đường link dự án: ${batdongsanUrl || 'https://batdongsan.com.vn'}
-Phạm vi phân tích: ${scopeText}
-${customInput ? `Dữ liệu bổ sung / Nội dung người dùng cung cấp:\n${customInput}` : ''}
+DỮ LIỆU THỐNG KÊ (JSON):
+${JSON.stringify(facts)}
 
-Nhiệm vụ của bạn là đưa ra báo cáo phân tích thị trường chuẩn xác dựa trên thực tế giao dịch của dự án ${projectName} trên batdongsan.com.vn:
-1. vipStats: Thống kê tổng quan số lượng các loại tin trên phạm vi đã chọn (số lượng VIP Kim Cương, VIP Vàng, VIP Bạc, Tin Thường, tỷ lệ % tin VIP và nhận xét chuyên sâu về mức độ cạnh tranh giữ vị trí top đầu).
-2. pagesBreakdown: Bảng phân tích chi tiết từng trang (Trang 1, Trang 2, Trang 3 nếu phạm vi 3 trang): mỗi trang gồm 30 tin, số lượng từng loại tin VIP/thường, tỷ lệ % VIP và đặc điểm cạnh tranh riêng của trang đó (Ví dụ: Trang 1 bị chiếm lĩnh >90% bởi VIP Kim Cương & Vàng; Trang 2 bắt đầu có VIP Bạc; Trang 3 có nhiều tin thường và tin cắt lỗ sâu).
-3. agentsSummary: Tổng số môi giới đang đăng tin cạnh tranh và danh sách các sàn/đại lý lớn thống trị.
-4. top5Brokers: Top 5 môi giới chuyên nghiệp nhất của dự án (Xếp hạng 1-5, họ tên, SĐT/Zalo định dạng số di động Việt Nam thực tế, đại lý/sàn, số tin đăng, % thị phần, link tra cứu tin trên batdongsan.com.vn có dạng https://batdongsan.com.vn/ban-nha-dat?q={sđt_viết_liền}, chiến lược tiếp cận và điểm mạnh nổi bật).
-5. contentCategories: Phân loại nội dung tin đăng thành 3-4 nhóm chủ đề (ví dụ: Bán cắt lỗ/thu hồi vốn, Hàng ngoại giao trực tiếp CĐT, Cho thuê dòng tiền F&B, Biệt thự VIP compound...) kèm số lượng tin, tỷ lệ %, góc tiếp cận và từ khóa được dùng nhiều nhất.
-6. productsAndPricing: Các loại sản phẩm BĐS được giới thiệu (Liền kề nhỏ, Liền kề tiêu chuẩn, Shophouse trục chính, Biệt thự song lập/đơn lập...), số lượng tin, khoảng giá phổ biến, đơn giá trung bình/m² và đánh giá mức giá hiện giờ so với tiềm năng.
-7. historicalComparison: So sánh với dữ liệu cũ (Chu kỳ trước, xu hướng giá tăng/giảm/ổn định, biến động số lượng tin VIP, ghi chú thị trường).
-8. recommendations: Đề xuất đúng 3 sản phẩm chiến lược cần đăng tin phù hợp nhất với thị trường hiện tại. Mỗi sản phẩm có:
-   - productName: Tên sản phẩm rõ ràng
-   - productType: Loại hình BĐS
-   - subdivision: Phân khu gợi ý
-   - priceEstimate: Mức giá chào bán đề xuất
-   - area: Diện tích
-   - whyRecommended: Lý do đề xuất dựa trên nhu cầu tìm kiếm thực tế
-   - sampleTitleBDS: Tiêu đề mẫu CHUẨN yêu cầu batdongsan.com.vn (dưới 99 ký tự, không spam từ khóa, đầy đủ loại hình + phân khu + diện tích + giá sốc + sổ đỏ, giật tít thu hút click tối đa)
-   - outlineBullets: 3-4 gạch đầu dòng dàn ý bài viết
-   - specs: { projectName, area, price, pricePerM2, subdivision, propertyType, highlights, legal, amenities }`;
+TIÊU ĐỀ THẬT ĐANG Ở TOP (VIP Kim Cương/Vàng):
+${topTitles.join('\n')}
+
+MỘT SỐ TIÊU ĐỀ THẬT KHÁC:
+${otherTitles.join('\n')}
+
+QUY TẮC BẮT BUỘC:
+- CHỈ dùng con số và tên có trong dữ liệu trên. TUYỆT ĐỐI KHÔNG bịa số liệu, số điện thoại, tên môi giới, số tin, xu hướng giá theo thời gian.
+- Không có mốc so sánh thời gian thì không nói giá tăng/giảm.
+- Trả về JSON gồm:
+  1. competitionAnalysis: 2-3 câu nhận định mức độ cạnh tranh VIP dựa trên số liệu tiers và pagesBreakdown.
+  2. marketNotes: 2-3 câu nhận xét về mặt bằng giá/sản phẩm dựa trên products.
+  3. categoryAngles: với mỗi contentCategories, 2-3 góc tiếp cận (angles) rút ra từ tiêu đề thật ở trên.
+  4. recommendations: đúng 3 phần tử theo proposedProducts (giữ nguyên id). Mỗi phần tử: whyRecommended (1-2 câu, chỉ dùng số trong dữ liệu), sampleTitleBDS (dưới 99 ký tự, dựa trên typicalTitleFromData và cách đặt tiêu đề của các tiêu đề top; chỉ dùng con số có trong proposedProducts của chính sản phẩm đó; không emoji), outlineBullets (3-4 gạch đầu dòng dàn ý, không chứa số liệu cụ thể).`;
 
       const response = await ai.models.generateContent({
         model: AI_MODEL,
         contents: prompt,
         config: {
-          responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              vipStats: {
-                type: Type.OBJECT,
-                properties: {
-                  vipDiamond: { type: Type.INTEGER },
-                  vipGold: { type: Type.INTEGER },
-                  vipSilver: { type: Type.INTEGER },
-                  normal: { type: Type.INTEGER },
-                  vipPercentage: { type: Type.NUMBER },
-                  competitionAnalysis: { type: Type.STRING },
-                },
-                required: ['vipDiamond', 'vipGold', 'vipSilver', 'normal', 'vipPercentage', 'competitionAnalysis'],
-              },
-              pagesBreakdown: {
+              competitionAnalysis: { type: Type.STRING },
+              marketNotes: { type: Type.STRING },
+              categoryAngles: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
-                  properties: {
-                    pageNumber: { type: Type.INTEGER },
-                    pageLabel: { type: Type.STRING },
-                    totalListings: { type: Type.INTEGER },
-                    vipDiamond: { type: Type.INTEGER },
-                    vipGold: { type: Type.INTEGER },
-                    vipSilver: { type: Type.INTEGER },
-                    normal: { type: Type.INTEGER },
-                    vipPercentage: { type: Type.NUMBER },
-                    keyCharacteristics: { type: Type.STRING },
-                  },
-                  required: ['pageNumber', 'pageLabel', 'totalListings', 'vipDiamond', 'vipGold', 'vipSilver', 'normal', 'vipPercentage', 'keyCharacteristics'],
+                  properties: { categoryName: { type: Type.STRING }, angles: { type: Type.ARRAY, items: { type: Type.STRING } } },
+                  required: ['categoryName', 'angles'],
                 },
-              },
-              agentsSummary: {
-                type: Type.OBJECT,
-                properties: {
-                  totalActiveBrokers: { type: Type.INTEGER },
-                  dominantAgencies: { type: Type.ARRAY, items: { type: Type.STRING } },
-                },
-                required: ['totalActiveBrokers', 'dominantAgencies'],
-              },
-              top5Brokers: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    rank: { type: Type.INTEGER },
-                    name: { type: Type.STRING },
-                    phone: { type: Type.STRING },
-                    agency: { type: Type.STRING },
-                    totalListings: { type: Type.INTEGER },
-                    marketSharePercent: { type: Type.NUMBER },
-                    profileUrl: { type: Type.STRING },
-                    keyStrategy: { type: Type.STRING },
-                    strengths: { type: Type.STRING },
-                  },
-                  required: ['rank', 'name', 'phone', 'agency', 'totalListings', 'marketSharePercent', 'profileUrl', 'keyStrategy', 'strengths'],
-                },
-              },
-              contentCategories: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    categoryName: { type: Type.STRING },
-                    count: { type: Type.INTEGER },
-                    percentage: { type: Type.NUMBER },
-                    angles: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    topKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  },
-                  required: ['categoryName', 'count', 'percentage', 'angles', 'topKeywords'],
-                },
-              },
-              productsAndPricing: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    productType: { type: Type.STRING },
-                    count: { type: Type.INTEGER },
-                    priceRange: { type: Type.STRING },
-                    avgPriceM2: { type: Type.STRING },
-                    marketEvaluation: { type: Type.STRING },
-                  },
-                  required: ['productType', 'count', 'priceRange', 'avgPriceM2', 'marketEvaluation'],
-                },
-              },
-              historicalComparison: {
-                type: Type.OBJECT,
-                properties: {
-                  previousBenchmarkPeriod: { type: Type.STRING },
-                  priceTrend: { type: Type.STRING },
-                  listingVolumeTrend: { type: Type.STRING },
-                  vipCompetitionShift: { type: Type.STRING },
-                  marketNotes: { type: Type.STRING },
-                },
-                required: ['previousBenchmarkPeriod', 'priceTrend', 'listingVolumeTrend', 'vipCompetitionShift', 'marketNotes'],
               },
               recommendations: {
                 type: Type.ARRAY,
@@ -420,74 +251,83 @@ Nhiệm vụ của bạn là đưa ra báo cáo phân tích thị trường chu�
                   type: Type.OBJECT,
                   properties: {
                     id: { type: Type.INTEGER },
-                    productName: { type: Type.STRING },
-                    productType: { type: Type.STRING },
-                    subdivision: { type: Type.STRING },
-                    priceEstimate: { type: Type.STRING },
-                    area: { type: Type.STRING },
                     whyRecommended: { type: Type.STRING },
                     sampleTitleBDS: { type: Type.STRING },
                     outlineBullets: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    specs: {
-                      type: Type.OBJECT,
-                      properties: {
-                        projectName: { type: Type.STRING },
-                        area: { type: Type.STRING },
-                        price: { type: Type.STRING },
-                        pricePerM2: { type: Type.STRING },
-                        subdivision: { type: Type.STRING },
-                        propertyType: { type: Type.STRING },
-                        highlights: { type: Type.STRING },
-                        legal: { type: Type.STRING },
-                        amenities: { type: Type.STRING },
-                      },
-                      required: ['projectName', 'area', 'price', 'subdivision', 'propertyType'],
-                    },
                   },
-                  required: ['id', 'productName', 'productType', 'subdivision', 'priceEstimate', 'area', 'whyRecommended', 'sampleTitleBDS', 'outlineBullets', 'specs'],
+                  required: ['id', 'whyRecommended', 'sampleTitleBDS', 'outlineBullets'],
                 },
               },
             },
-            required: ['vipStats', 'agentsSummary', 'top5Brokers', 'contentCategories', 'productsAndPricing', 'historicalComparison', 'recommendations'],
+            required: ['competitionAnalysis', 'marketNotes', 'categoryAngles', 'recommendations'],
           },
         },
       });
 
       const parsed = JSON.parse(response.text || '{}');
-      const totalCount = pageScope === '1_page' ? 30 : pageScope === '2_pages' ? 60 : 90;
+      // Any text that contains a figure not present in the real data is dropped (the computed text stays).
+      const allowed = JSON.stringify(facts) + ' ' + rows.map((r) => `${r.title} ${r.price} ${r.area} ${r.pricePerM2}`).join(' ');
+      const safe = (text: any, fallback: string) => {
+        if (typeof text !== 'string' || !text.trim()) return fallback;
+        const bad = unsupportedFigures(text, allowed);
+        if (bad.length) {
+          console.warn('Dropped AI text with unsupported figures:', bad.join(', '), '|', text.slice(0, 120));
+          return fallback;
+        }
+        return text.trim();
+      };
+
       res.json({
         success: true,
         data: {
-          ...parsed,
-          projectName,
-          batdongsanUrl,
-          pageScope,
-          scannedAt: 'Cập nhật trực tiếp: ' + new Date().toLocaleTimeString('vi-VN') + ' - ' + new Date().toLocaleDateString('vi-VN'),
-          totalListingsCount: parsed.totalListingsCount || totalCount,
+          competitionAnalysis: safe(parsed.competitionAnalysis, ''),
+          marketNotes: safe(parsed.marketNotes, ''),
+          categoryAngles: (Array.isArray(parsed.categoryAngles) ? parsed.categoryAngles : []).map((c: any) => ({
+            categoryName: String(c?.categoryName || ''),
+            angles: (Array.isArray(c?.angles) ? c.angles : []).filter((a: any) => typeof a === 'string' && unsupportedFigures(a, allowed).length === 0),
+          })),
+          recommendations: (Array.isArray(parsed.recommendations) ? parsed.recommendations : []).map((r: any) => ({
+            id: Number(r?.id),
+            whyRecommended: safe(r?.whyRecommended, ''),
+            sampleTitleBDS: safe(r?.sampleTitleBDS, '').slice(0, 99),
+            outlineBullets: (Array.isArray(r?.outlineBullets) ? r.outlineBullets : []).filter((b: any) => typeof b === 'string' && unsupportedFigures(b, allowed).length === 0),
+          })),
         },
       });
     } catch (error: any) {
-      console.warn('AI Analyze Market quota/error, activating Smart Pre-computed Market Data for:', req.body?.projectName, error?.message);
-      const fallback = getFallbackMarketData(req.body?.projectName || 'Vinhomes Hạ Long Xanh', req.body?.pageScope || '3_pages');
-      if (req.body?.batdongsanUrl) {
-        fallback.batdongsanUrl = req.body.batdongsanUrl;
-      }
-      res.json({
-        success: true,
-        data: fallback,
-        isQuotaFallback: true,
-        notice: 'Đang hiển thị dữ liệu nghiên cứu thị trường thực tế từ Batdongsan.com.vn (Chế độ dự phòng khi AI đạt giới hạn ngạch).',
-      });
+      console.warn('AI market narrative error:', error?.message);
+      res.status(502).json({ error: `AI chưa viết được nhận định (${error?.message || 'lỗi không rõ'}). Các con số thống kê vẫn đúng và đang hiển thị.` });
     }
   });
 
   // 1C. Competitor Deep Playbook Reverse-Engineering Endpoint (Phần 2: Phân Tích Đồng Nghiệp)
   app.post('/api/gemini/analyze-competitor-playbook', async (req, res) => {
     try {
-      const { competitorUrl, competitorName, projectName, customNotes } = req.body;
-      if (!competitorUrl && !customNotes) {
-        return res.status(400).json({ error: 'Vui lòng cung cấp Link trang tin đối thủ hoặc nội dung trích xuất.' });
+      const { competitorUrl, competitorName, projectName, customNotes, rows: rawRows } = req.body;
+      const compRows: ListingRow[] = Array.isArray(rawRows) ? (rawRows as ListingRow[]).slice(0, 200) : [];
+      if (compRows.length === 0 && !(customNotes && String(customNotes).trim())) {
+        return res.status(400).json({ error: 'Cần dữ liệu thật của đối thủ: chọn một môi giới trong dữ liệu đã quét, hoặc dán các tin đăng của họ vào ô ghi chú. App không tự suy đoán từ link.' });
       }
+      const tc = tierCounts(compRows);
+      const compFacts = compRows.length
+        ? {
+            listingCount: compRows.length,
+            tiers: tc,
+            products: groupByProduct(compRows).map((g) => ({ type: g.type, count: g.count, priceRange: g.priceRange, medianPricePerM2: g.medianPricePerM2, areaRange: g.areaRange })),
+            keywordBuckets: bucketStats(compRows).map((b) => ({ name: b.categoryName, count: b.count, topKeywords: b.topKeywords })),
+            brokers: brokerStats(compRows).slice(0, 3).map((b) => ({ name: b.name, listings: b.rows.length })),
+            titles: compRows.slice(0, 25).map((r) => `[${r.tier}] ${r.title} | ${r.price} | ${r.area} | ${r.published}`),
+          }
+        : null;
+      const realDataBlock = `
+# REAL DATA (the ONLY source of facts)
+${compFacts ? JSON.stringify(compFacts) : '(no structured listing data; use only the user notes above)'}
+
+# STRICT RULES
+- Use ONLY the real data and user notes above. Never invent numbers, phone numbers, names, listing counts, posting frequency, traffic, or cross-platform funnels.
+- Anything that cannot be derived from this data (traffic mechanics, personal branding, Zalo/Facebook funnel, posting velocity) must be written exactly as: "Không có dữ liệu trong trang danh sách".
+- Quote analyzed headlines verbatim, using ONLY the title text (the part before the first " | "), without the appended price/area/date.
+- All figures in the output must appear in the data above.`;
 
       const prompt = `You are an elite Real Estate Growth Hacker, Data Analyst, and AI Automation Architect specializing in property market dominance. Your task is to perform an exhaustive, reverse-engineering analysis of a competitor's real estate profile page and active listings on Batdongsan.com.vn to extract their exact marketing playbook, traffic mechanics, and conversion psychological hooks—and subsequently deliver an aggressive, actionable, step-by-step competitive counter-strategy and technical implementation roadmap.
 
@@ -496,6 +336,7 @@ Target Competitor Information:
 - Competitor Broker / Agency Name: ${competitorName || 'Đối thủ phân tích'}
 - Focus Project: ${projectName || 'Đại đô thị Vinhomes'}
 ${customNotes ? `Additional Listings Excerpt / User Notes / Sample Headings:\n${customNotes}` : ''}
+${realDataBlock}
 
 # Analytical Framework
 Dissect the target competitor across the four critical pillars:
@@ -659,18 +500,8 @@ Language: Professional Vietnamese with standard real estate industry terms.`;
         },
       });
     } catch (error: any) {
-      console.warn('AI Competitor Playbook quota/error, activating Smart Pre-computed Playbook for:', req.body?.projectName, error?.message);
-      const fallback = getFallbackCompetitorPlaybook(
-        req.body?.projectName || 'Vinhomes Hạ Long Xanh',
-        req.body?.competitorName,
-        req.body?.competitorUrl
-      );
-      res.json({
-        success: true,
-        data: fallback,
-        isQuotaFallback: true,
-        notice: 'Đang hiển thị phân tích Playbook đối thủ từ kho dữ liệu tình báo cạnh tranh thực tế (Chế độ dự phòng khi AI đạt giới hạn ngạch).',
-      });
+      console.warn('AI Competitor Playbook error:', error?.message);
+      res.status(502).json({ error: `AI chưa phân tích được (${error?.message || 'lỗi không rõ'}). Hãy thử lại.` });
     }
   });
 
@@ -827,87 +658,68 @@ HƯỚNG DẪN TRÍCH XUẤT VÀ SUY LUẬN:
     } catch (error: any) {
       console.warn('AI Parse Raw Listing error, using smart regex fallback:', error?.message);
       
-      // Smart Rule-based Fallback Parser
+      // Rule-based fallback: extracts ONLY what is literally present in the text; everything else stays empty.
       const rawText: string = req.body.rawText || '';
       const lower = rawText.toLowerCase();
 
-      let projectName = 'Vinhomes Ocean Park 1';
-      if (lower.includes('ocean park 2') || lower.includes('the empire') || lower.includes('kinh đô') || lower.includes('sao biển') || lower.includes('đảo dừa') || lower.includes('chà là')) {
-        projectName = 'Vinhomes Ocean Park 2 - The Empire';
-      } else if (lower.includes('ocean park 3') || lower.includes('the crown') || lower.includes('vịnh tây') || lower.includes('phố biển')) {
-        projectName = 'Vinhomes Ocean Park 3 - The Crown';
-      } else if (lower.includes('hạ long xanh') || lower.includes('ha long')) {
-        projectName = 'Vinhomes Hạ Long Xanh';
-      } else if (lower.includes('king park') || lower.includes('bắc ninh')) {
-        projectName = 'Khu Đô Thị King Park Bắc Ninh';
-      } else if (lower.includes('olympic') || lower.includes('hà nội')) {
-        projectName = 'Đại Đô Thị Vinhomes Olympic Hà Nội';
-      } else if (lower.includes('ha1') || lower.includes('hải âu')) {
-        projectName = 'Vinhomes Ocean Park 1';
-      }
+      let projectName = '';
+      if (lower.includes('ocean park 2') || lower.includes('the empire')) projectName = 'Vinhomes Ocean Park 2 - The Empire';
+      else if (lower.includes('ocean park 3') || lower.includes('the crown')) projectName = 'Vinhomes Ocean Park 3 - The Crown';
+      else if (lower.includes('hạ long xanh') || lower.includes('ha long')) projectName = 'Vinhomes Hạ Long Xanh';
+      else if (lower.includes('king park')) projectName = 'Khu Đô Thị King Park Bắc Ninh';
+      else if (lower.includes('olympic')) projectName = 'Đại Đô Thị Vinhomes Olympic Hà Nội';
+      else if (lower.includes('ocean park 1') || /\bha\d+-\d+/i.test(rawText)) projectName = 'Vinhomes Ocean Park 1';
 
-      let unitCode = '';
-      const codeMatch = rawText.match(/(HA\d+-\d+|SB-?\d+|ĐD-?\d+|SH-?\d+|CL-?\d+|PB-?\d+|KĐ-?\d+|Căn\s+[A-Z0-9-]+)/i);
-      if (codeMatch) unitCode = codeMatch[1].replace(/Căn\s+/i, '').trim();
+      const codeMatch = rawText.match(/(HA\d+-\d+|SB-?\d+-?\d*|ĐD-?\d+|CL-?\d+|PB-?\d+|KĐ-?\d+)/i);
+      const unitCode = codeMatch ? codeMatch[1] : '';
 
-      let subdivision = unitCode ? `Phân khu ${unitCode.slice(0, 3)} (${unitCode})` : 'Phân khu Hải Âu 1';
-      if (unitCode.startsWith('HA1') || lower.includes('hải âu 1') || lower.includes('hải âu')) {
-        subdivision = `Phân khu Hải Âu 1 ${unitCode ? `(${unitCode})` : ''}`.trim();
-      }
-
-      let propertyType = 'Liền kề';
+      let propertyType = '';
       if (lower.includes('shophouse')) propertyType = 'Shophouse';
       else if (lower.includes('song lập')) propertyType = 'Biệt thự song lập';
       else if (lower.includes('đơn lập')) propertyType = 'Biệt thự đơn lập';
+      else if (lower.includes('liền kề') || /\blk\b/.test(lower)) propertyType = 'Liền kề';
 
-      let area = '56';
-      const areaMatch = rawText.match(/(\d+(?:\.\d+)?)\s*(?:m2|m²)/i);
-      if (areaMatch) area = areaMatch[1];
-
-      let price = '7 tỷ';
-      const priceMatch = rawText.match(/(?:giá\s*[:\s]*)?(\d+(?:[.,]\d+)?\s*(?:tỷ|ty|tr|triệu)[^\n,]*)/i);
-      if (priceMatch) price = priceMatch[1].trim();
-
+      const areaMatch = rawText.match(/(\d+(?:[.,]\d+)?)\s*(?:m2|m²)/i);
+      const area = areaMatch ? areaMatch[1] : '';
+      const priceMatch = rawText.match(/(\d+(?:[.,]\d+)?\s*(?:tỷ|ty|tr|triệu)[^\n,]*)/i);
+      const price = priceMatch ? priceMatch[1].trim() : '';
       const ftMatch = rawText.match(/(?:mặt tiền|mt)\s*[:\s]*([^\n,-]+)/i);
-      const frontage = ftMatch ? ftMatch[1].trim() : '4mx14m';
+      const frontage = ftMatch ? ftMatch[1].trim() : '';
+      const dirMatch = rawText.match(/hướng\s*[:\s]*([a-zA-Zà-ỹ\s]+)/i);
+      const orientation = dirMatch ? dirMatch[1].trim().split(/[\n,.-]/)[0].trim() : '';
+      const flMatch = rawText.match(/(\d+\s*tầng[^\n,]*)/i);
+      const floors = flMatch ? flMatch[1].trim() : '';
 
-      const dirMatch = rawText.match(/(?:hướng)\s*[:\s]*([a-zA-Zà-ỹ\s]+)/i);
-      const orientation = dirMatch ? dirMatch[1].trim().split(/[\n,.-]/)[0].trim() : 'Tây Bắc';
-
-      const flMatch = rawText.match(/(?:xây\s*)?(\d+\s*tầng[^\n,]*)/i);
-      const floors = flMatch ? flMatch[1].trim() : '5 tầng có ban công';
-
-      const caMatch = rawText.match(/(?:xây dựng|tổng dtsx?d?|sàn)\s*[:\s]*(\d+(?:\.\d+)?\s*(?:m2|m²))/i);
-      const constructionArea = caMatch ? caMatch[1].trim() : '224.3m²';
-
-      const isOcean = projectName.toLowerCase().includes('ocean park') || projectName.toLowerCase().includes('hải âu');
+      const required: Array<[string, string]> = [['projectName', projectName], ['propertyType', propertyType], ['area', area], ['price', price]];
+      const missingRequiredFields = required.filter(([, v]) => !v).map(([k]) => k);
+      const isOcean = projectName.toLowerCase().includes('ocean park');
 
       res.json({
         success: true,
         data: {
           projectName,
-          subdivision,
+          subdivision: unitCode ? `Mã căn ${unitCode}` : '',
           unitCode,
           propertyType,
           area,
           price,
-          pricePerM2: '125 tr/m²',
+          pricePerM2: '',
           frontage,
           orientation,
           floors,
-          constructionArea,
-          bedrooms: '5',
-          bathrooms: '4',
-          legal: 'Sổ đỏ có vay bank nhưng chủ nhà tự tất toán được',
-          amenities: 'Ngay gần 10 tòa chung cư, công viên Silk Park, Vincom Mega Mall, trường Vinschool, ngã tư kinh doanh sầm uất',
-          keyHighlights: 'Sát căn góc ngã tư kinh doanh ngay, thiết kế 5 phòng ngủ, bếp, nhà vs, vườn nhỏ sau nhà, sẵn ảnh sổ & ảnh chụp mới',
-          address: `${subdivision}, ${projectName}, Gia Lâm, Hà Nội`,
-          personaVoice: isOcean ? 'le_yen' : 'vu_viet',
-          contactName: isOcean ? 'Ms Yến' : 'Mr Việt',
-          phone: isOcean ? '0918 600 050' : '090.223.5050',
-          confidenceScore: 92,
-          summaryOneLiner: `Đã trích xuất nhanh căn ${unitCode || subdivision}: ${propertyType} ${area}m² - Giá ${price}`,
-          missingRequiredFields: [],
+          constructionArea: '',
+          bedrooms: '',
+          bathrooms: '',
+          legal: '',
+          amenities: '',
+          keyHighlights: '',
+          address: '',
+          personaVoice: projectName ? (isOcean ? 'le_yen' : 'vu_viet') : undefined,
+          contactName: '',
+          phone: '',
+          confidenceScore: 40,
+          summaryOneLiner: 'AI chưa phản hồi nên chỉ bóc được các trường có sẵn trong ghi chú. Hãy kiểm tra và điền nốt các trường còn trống.',
+          missingRequiredFields,
           missingOptionalQuestions: [],
         },
       });
@@ -934,7 +746,7 @@ HƯỚNG DẪN TRÍCH XUẤT VÀ SUY LUẬN:
     let text = (raw || '')
       .replace(/[\r\n\t]+/g, ' ')
       .replace(/\s+/g, ' ')
-      .replace(/[^\w\s\dà-ỹÀ-Ỹ.,/()\-+]/g, '')
+      .replace(/[^\w\s\dà-ỹÀ-Ỹ.,/()\-+%²]/g, '')
       .trim();
 
     const cleanProjectName = projectName ? projectName.trim() : 'Vinhomes';
@@ -956,204 +768,12 @@ HƯỚNG DẪN TRÍCH XUẤT VÀ SUY LUẬN:
       }
     }
 
-    // 2. If shorter than 90 characters: pad smoothly with real-estate keyword phrases, never exceeding 99
-    const fillers = ['đẹp', 'chính chủ', 'kinh doanh tốt', 'sổ đỏ sẵn có', 'vị trí đắc địa'];
-    let idx = 0;
-    while (text.length < 90 && idx < fillers.length) {
-      const phrase = fillers[idx++];
-      if (text.includes(suffix)) {
-        const candidate = text.replace(suffix, ` ${phrase}${suffix}`);
-        if (candidate.length <= 99) {
-          text = candidate;
-        }
-      } else {
-        const candidate = `${text} ${phrase}`;
-        if (candidate.length <= 99) {
-          text = candidate;
-        }
-      }
-    }
-
     // 3. Absolute clamp guarantee: MUST be <= 99 characters
     if (text.length > 99) {
       text = text.slice(0, 99).trim().replace(/[, \-]+$/, '');
     }
 
     return text;
-  }
-
-  // Helper: Rulebook Listing Generator Engine (Deterministic & 100% Compliant Fallback)
-  function generateRulebookListings(params: any) {
-    const {
-      projectName = 'Vinhomes Ocean Park 1',
-      subdivision = 'Phân khu Hải Âu 1 (HA1-95)',
-      propertyType = 'Liền kề',
-      area = '56',
-      price = '7 tỷ bao phí sang tên',
-      pricePerM2 = '125 tr/m²',
-      orientation = 'Tây Bắc',
-      frontage = '4mx14m',
-      floors = 'Xây 5 tầng',
-      constructionArea = '224.3m²',
-      legal = 'Sổ đỏ có vay bank nhưng chủ nhà tự tất toán được',
-      amenities = 'Ngay gần 10 tòa chung cư, công viên Silk Park, Vincom, Vinschool',
-      keyHighlights = 'Sát căn góc ngã tư kinh doanh được ngay, thiết kế 5 phòng ngủ, bếp, nhà vs, vườn nhỏ',
-      contactName,
-      phone,
-      personaVoice: rawVoice,
-    } = params;
-
-    // Smart Router Knowledge Match
-    const contextMatch = matchAndInjectContext({
-      projectName,
-      subdivision,
-      propertyType,
-      area,
-      price,
-      amenities,
-      keyHighlights,
-    });
-
-    const isOcean = projectName.toLowerCase().includes('ocean park') || 
-                    projectName.toLowerCase().includes('ocean city') || 
-                    projectName.toLowerCase().includes('hải âu');
-    const activeVoice = rawVoice || (isOcean ? 'le_yen' : 'vu_viet');
-    const finalContactName = contactName || (activeVoice === 'le_yen' ? 'Ms Yến' : 'Mr Việt');
-    const finalPhone = phone || (activeVoice === 'le_yen' ? '0918 600 050' : '090.223.5050');
-
-    const cleanType = propertyType.toLowerCase().includes('liền kề') ? 'căn LK' : propertyType;
-    const cleanSub = subdivision.replace(/\(.*\)/, '').trim() || subdivision;
-    const cleanPrice = price.toLowerCase().startsWith('giá') ? price : `Giá ${price.replace(/bao phí.*/i, '').trim()}`;
-    const cleanArea = `${area}`.replace(/m2|m²/i, '').trim();
-    const cleanFront = frontage ? `MT ${frontage.replace(/mặt tiền|mt/i, '').trim()}` : 'MT thoáng';
-    const cleanDir = orientation ? `hướng ${orientation}` : 'hướng mát';
-
-    // Build base title with 6 components: [loại hình] + [phân khu] + [diện tích] + [hướng hoặc mặt tiền] + [giá] + [tên dự án đầy đủ]
-    const baseTitle1 = `${cleanPrice} ${cleanType} ${cleanSub} ${cleanArea}m2 ${cleanDir} ${cleanFront} xây 5 tầng - ${projectName}`;
-    const baseTitle2 = `${cleanPrice} ${cleanType} ${cleanSub} ${cleanArea}m2 ${cleanFront} sát ngã tư kinh doanh - ${projectName}`;
-    const baseTitle3 = `${cleanPrice} căn nhà ${cleanType} ${cleanSub} ${cleanArea}m2 ${cleanDir} có ban công - ${projectName}`;
-
-    // Exactly 3 suggested titles, guaranteed strictly 90-99 characters (never > 99)
-    const suggestedTitles = [
-      formatStrict99Title(baseTitle1, projectName),
-      formatStrict99Title(baseTitle2, projectName),
-      formatStrict99Title(baseTitle3, projectName),
-    ];
-    const title1 = suggestedTitles[0];
-
-    const isLeYen = activeVoice === 'le_yen';
-    const line1_2 = isLeYen
-      ? `Chính chủ gửi bán gấp căn ${cleanType} ${cleanSub} ${cleanArea}m² sát ngay căn góc ngã tư, đối diện 10 tòa chung cư sầm uất, vị trí cực kỳ đắc địa vừa ở vừa kinh doanh sinh lời cao tại ${projectName}.`
-      : `Bán căn ${cleanType} ${cleanSub} ${cleanArea}m² vị trí kinh doanh ngay sát căn góc ngã tư, đối diện 10 tòa chung cư tại ${projectName}, sổ đỏ sẵn có sang tên ngay.`;
-
-    const line3 = isLeYen
-      ? `Miễn phí môi giới. LH E Yến - ${finalPhone} (zalo, imess)`
-      : `Miễn phí môi giới và tư vấn. LH Mr Việt - ${finalPhone} (zalo)`;
-
-    const line4 = `Thông tin cụ thể như sau:`;
-
-    const amenityPoint1 = contextMatch.matchedAmenities[0] || 'Ngay gần 10 tòa chung cư';
-    const amenityPoint2 = contextMatch.matchedAmenities[1] || 'Gần công viên trung tâm và Vincom';
-
-    const clusters = [
-      `- Diện tích đất: ${cleanArea}m²\n- Mặt tiền ${frontage || '4mx14m'}, ${floors || 'xây 5 tầng'}\n- Tổng diện tích sàn: ${constructionArea || '224.3m²'}\n- Hướng nhà: ${orientation || 'Tây Bắc'} thoáng mát`,
-      `- Thiết kế 5 phòng ngủ rộng rãi\n- Đầy đủ phòng bếp, WC từng tầng\n- Có ban công và sân vườn nhỏ phía sau`,
-      `- Ngay sát trục đường chính\n- ${amenityPoint1.slice(0, 36)}\n- ${amenityPoint2.slice(0, 36)}`,
-      `- Phù hợp gia đình mua để ở\n- Kết hợp kinh doanh buôn bán ngay\n- Dễ dàng cho thuê dòng tiền ổn định`,
-      `- Sổ đỏ sẵn có sang tên công chứng\n- Chủ nhà tự tất toán ngân hàng\n- ${cleanPrice} (bao toàn bộ chi phí sang tên)`,
-    ];
-
-    const closing = isLeYen
-      ? `Liên hệ: Ms Yến - ${finalPhone} để xem thực tế và tư vấn cụ thể về pháp lý thủ tục. Trân trọng cảm ơn quý khách hàng đã đọc tin!`
-      : `Liên hệ: Mr Việt - ${finalPhone} để em gửi bản đồ quy hoạch và tư vấn cụ thể. Cảm ơn anh chị đã đọc tin!`;
-
-    const batdongsanContent = `${line1_2}\n\n${line3}\n${line4}\n\n${clusters.join('\n\n')}\n\n${closing}`;
-
-    const zaloTitle = `🌟 [XÁC THỰC] CĂN ${cleanSub.toUpperCase()} ${cleanArea}M² - GIÁ ${cleanPrice.toUpperCase()}`;
-    const zaloContent = `🌟 SIÊU PHẨM ${cleanType.toUpperCase()} ${cleanSub.toUpperCase()} - ${projectName.toUpperCase()}
-📍 Vị trí vàng: Sát căn góc ngã tư, sát 10 tòa chung cư, gần công viên Silk Park & Vincom
-
-📐 Thông số vàng:
-• Diện tích: ${cleanArea}m² (${frontage || '4mx14m'})
-• Xây dựng: 5 tầng (${constructionArea || '224.3m²'})
-• Hướng: ${orientation || 'Tây Bắc'} mát mẻ
-• Công năng: 5 phòng ngủ, bếp, WC, sân sau
-
-💰 Giá bán: ${cleanPrice} (Bao toàn bộ thuế phí)
-📕 Pháp lý: Sổ đỏ chính chủ (sẵn sàng công chứng)
-📸 Sẵn ảnh sổ đỏ và ảnh chụp thực tế hôm qua gửi riêng anh/chị
-
-📲 Kết nối Zalo / Gọi trực tiếp: ${finalContactName} - ${finalPhone} để nhận trọn bộ hồ sơ và xem nhà ngay hôm nay!`;
-
-    const fbTitle = `🔥 CƠ HỘI SỞ HỮU ${cleanType.toUpperCase()} SÁT CĂN GÓC ĐỐI DIỆN 10 TÒA CHUNG CƯ TẠI ${projectName.toUpperCase()}!`;
-    const fbContent = `🔥 CƠ HỘI SỞ HỮU ${cleanType.toUpperCase()} SÁT CĂN GÓC KINH DOANH ĐƯỢC NGAY TẠI ${projectName.toUpperCase()}!
-
-Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể tự kinh doanh hoặc cho thuê dòng tiền sầm uất thì không thể bỏ qua căn này:
-
-✨ THÔNG TIN CHI TIẾT:
-- Vị trí: ${cleanSub}, ngay sát ngã tư, cách 10 tòa chung cư chỉ vài bước chân
-- Diện tích đất: ${cleanArea}m² | Mặt tiền ${frontage || '4mx14m'}
-- Xây 5 tầng kiên cố, tổng DTSXD ${constructionArea || '224.3m²'}
-- Thiết kế 5 phòng ngủ, phòng khách, bếp, WC từng tầng, ban công thoáng mát và vườn nhỏ sau nhà
-- Hướng ${orientation || 'Tây Bắc'} đón lộc
-- Liền kề công viên Silk Park, TTTM Vincom Mega Mall, trường liên cấp Vinschool
-
-💎 GIÁ BÁN & PHÁP LÝ:
-- Giá cực tốt: ${cleanPrice} (bao trọn gói phí sang tên)
-- Sổ đỏ lâu dài (chủ nhà tự chủ tài chính tất toán bank)
-
-📞 Anh chị quan tâm liên hệ em ${finalContactName} - ${finalPhone} để đi xem thực tế và thương lượng trực tiếp chủ nhà!
-
-#${projectName.replace(/[\s-]+/g, '')} #${cleanSub.replace(/[\s()-]+/g, '')} #BatDongSanVuViet #${finalContactName.replace(/\s+/g, '')} #NhaDepGiaTot`;
-
-    return {
-      suggestedTitles,
-      versionInvestment: {
-        title: title1,
-        content: batdongsanContent,
-        summaryHighlights: [
-          `DT: ${cleanArea}m² (${frontage || '4mx14m'})`,
-          `Giá: ${cleanPrice}`,
-          `Sát ngã tư đối diện 10 tòa CC`,
-          `Sổ đỏ chính chủ sẵn sàng`,
-        ],
-      },
-      versionFamily: {
-        title: zaloTitle,
-        content: zaloContent,
-        summaryHighlights: [
-          `Tối ưu gửi Zalo & Nhật ký VIP`,
-          `Sẵn ảnh sổ đỏ và ảnh chụp thực tế`,
-          `Đầy đủ thông số 5 phòng ngủ`,
-          `Call to action Zalo trực tiếp`,
-        ],
-      },
-      versionSocial: {
-        title: fbTitle,
-        content: fbContent,
-        summaryHighlights: [
-          `Định dạng chuẩn Facebook Group`,
-          `Hook kinh doanh đối diện 10 tòa chung cư`,
-          `Gợi mở bài toán dòng tiền & an cư`,
-          `Bộ hashtag chuẩn SEO Facebook`,
-        ],
-      },
-      seoMeta: {
-        metaDescription: `Bán căn ${cleanType} ${cleanSub} ${cleanArea}m2 ${cleanDir} ${cleanPrice} tại ${projectName}. Sát căn góc kinh doanh, gần 10 tòa chung cư, sổ đỏ chính chủ. LH ${finalPhone}.`,
-        focusKeywords: [
-          projectName,
-          `${cleanType} ${cleanSub}`,
-          `mua bán ${projectName}`,
-          `bán nhà ${cleanSub}`,
-        ],
-        hashtags: [
-          `#${projectName.replace(/[\s-]+/g, '')}`,
-          `#${cleanSub.replace(/[\s()-]+/g, '')}`,
-          `#VuVietProperty`,
-          `#BatDongSan`,
-        ],
-      },
-    };
   }
 
   // 2. SEO Content Generation Endpoint (3 versions: Batdongsan, Zalo, Facebook)
@@ -1183,10 +803,11 @@ Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể t�
         frontage,
         floors,
         constructionArea,
+        marketContext,
       } = req.body;
 
-      if (!projectName || !price) {
-        return res.status(400).json({ error: 'Tên dự án và mức giá là thông tin bắt buộc.' });
+      if (!projectName || !price || !area) {
+        return res.status(400).json({ error: 'Tên dự án, diện tích và mức giá là thông tin bắt buộc.' });
       }
 
       // Determine persona: Ocean Park -> Le Yen, Others -> Vu Viet (unless explicitly chosen)
@@ -1206,15 +827,15 @@ Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể t�
 - Dòng 3 (Liên hệ đầu): "Miễn phí môi giới. LH E Yến - ${finalPhone} (zalo, imess)"
 - Dòng 4 (Câu chuyển): "Thông tin cụ thể như sau:"
 - Dòng 5 trở đi (Khung gạch đầu dòng): Chia thành đúng 5 cụm, mỗi cụm 2-3 dòng rồi 1 DÒNG TRẮNG cách nhau. Mỗi dòng bắt đầu bằng dấu "-", dưới 12 chữ/dòng:
-  * Cụm 1 (Thông số): Diện tích đất ${area}m², ${floors || 'xây 4-5 tầng'}, ${constructionArea ? `tổng sàn ${constructionArea}` : ''}, ${frontage || 'mặt tiền thoáng'}, hướng ${orientation || 'mát mẻ'}
-  * Cụm 2 (Điểm nhấn): Thiết kế, sân vườn, xẻ khe, 2 mặt thoáng, view công viên
-  * Cụm 3 (Vị trí & Tiện ích): Khoảng cách tới công viên sóng / vịnh biển, Vincom, Vinschool
-  * Cụm 4 (Công năng): Vừa ở vừa kinh doanh, cho thuê dòng tiền cao
-  * Cụm 5 (Pháp lý & Giá): Sổ đỏ lâu dài, ký trực tiếp CĐT, giá sau chiết khấu, voucher, đơn giá/m²
+  * Cụm 1 (Thông số): Diện tích đất ${area}m², ${floors || '(không có dữ liệu: bỏ qua)'}, ${constructionArea ? `tổng sàn ${constructionArea}` : ''}, ${frontage || '(không có dữ liệu: bỏ qua mặt tiền)'}, hướng ${orientation || '(không có dữ liệu: bỏ qua hướng)'}
+  * Cụm 2 (Điểm nhấn): CHỈ điểm nhấn có trong dữ liệu đầu vào; không có thì dùng đặc điểm phân khu từ kho dự án
+  * Cụm 3 (Vị trí & Tiện ích): CHỈ tiện ích xác thực trong kho dự án; không tự thêm khoảng cách
+  * Cụm 4 (Công năng): theo loại hình thật của căn; không hứa hẹn dòng tiền/cho thuê nếu không có dữ liệu
+  * Cụm 5 (Pháp lý & Giá): theo dữ liệu đầu vào; không tự thêm chiết khấu, voucher, ký trực tiếp CĐT hay tình trạng sổ
 - Câu chốt: "Liên hệ: Ms Yến - ${finalPhone} để xem thực tế và tư vấn cụ thể về pháp lý thủ tục. Trân trọng cảm ơn quý khách hàng đã đọc tin!"
   * LƯU Ý: Câu chốt KHÔNG được kèm chữ "(zalo)"!
 - Bộ từ đặc trưng: "cực kỳ rẻ", "siêu khủng", "tha hồ", "chưa bao giờ có giá tốt như thế", dấu "=" thay cho "nên/dẫn đến" (vd: "Ký trực tiếp CĐT = Sổ đứng tên mình đầu tiên").
-- 3 đòn thuyết phục: Neo giá cao rồi thả xuống ("Giá chuyển nhượng 18 tỷ -> giá CĐT áp voucher chỉ còn ${price}"), Quy về đơn giá/m² ("đơn giá cực kỳ rẻ ${pricePerM2 || ''}"), Bằng chứng xã hội ("Cả dãy đã kinh doanh rất nhiều, sẵn lượng khách").`
+- 3 đòn thuyết phục: Neo giá (CHỈ khi dữ liệu đầu vào có giá gốc/giá chuyển nhượng; nếu không có thì bỏ đòn này), Quy về đơn giá/m² ("đơn giá cực kỳ rẻ ${pricePerM2 || ''}"), Bằng chứng xã hội (CHỈ khi có trong dữ liệu đầu vào hoặc kho dự án).`
         : `### HƯỚNG DẪN GIỌNG VĂN: VŨ VIỆT (Mr Việt — ${finalPhone}) - Áp dụng Bắc Ninh, Hạ Long Xanh, Olympic
 - Xưng hô: "em" — gọi "anh chị" / "quý anh chị". Tuyệt đối KHÔNG dùng "tôi", "Ms Yến".
 - Giọng nam, thẳng, bóc số: Tự tin, có căn cứ, nói luôn nhược điểm rồi kèm hướng xử lý. Ít tính từ phóng đại. "Cực kỳ" tối đa 1 lần/tin. Thay bằng con số thực tế.
@@ -1251,6 +872,23 @@ Anh chị đang tìm một căn nhà vừa để ở an cư, vừa có thể t�
         keyHighlights,
       });
 
+      const mc = marketContext && typeof marketContext === 'object' ? marketContext : null;
+      const marketBlock = mc
+        ? `--- DỮ LIỆU THỊ TRƯỜNG THẬT (batdongsan.com.vn, quét lúc ${mc.scrapedAt}, ${mc.rowCount} tin, tin VIP ${mc.vipPercentage}%) ---
+${(mc.products || []).map((pd: any) => `- ${pd.type}: ${pd.count} tin, giá ${pd.priceRange}${pd.medianPricePerM2 ? `, đơn giá trung vị ${pd.medianPricePerM2}` : ''}`).join('\n')}
+- Từ khóa đang được dùng nhiều: ${(mc.topKeywords || []).join(', ')}
+- Tiêu đề đang ở top (chỉ để học cách đặt tên và góc tiếp cận; KHÔNG sao chép, KHÔNG dùng số liệu của họ):
+${(mc.topTitles || []).map((t: string) => `  * ${t}`).join('\n')}
+Dùng dữ liệu này để chọn từ khóa và góc tiếp cận. KHÔNG dùng làm thông số của căn.`
+        : `--- DỮ LIỆU THỊ TRƯỜNG ---
+Chưa có dữ liệu thị trường thật: KHÔNG so sánh với thị trường, KHÔNG viết "rẻ hơn thị trường" hay "giá tốt nhất khu vực".`;
+      const factRules = `--- QUY TẮC DỮ KIỆN (ƯU TIÊN CAO NHẤT) ---
+1. Mọi con số, tên, chính sách, pháp lý trong tin PHẢI có trong "DỮ LIỆU ĐẦU VÀO", "KNOWLEDGE BASE" hoặc "DỮ LIỆU THỊ TRƯỜNG THẬT". Không có thì KHÔNG viết.
+2. Mục ghi "Chưa cung cấp" nghĩa là bỏ qua, không đoán, không dùng giá trị "thường gặp".
+3. Số liệu trong các ví dụ của hướng dẫn chỉ minh họa cấu trúc, TUYỆT ĐỐI không đưa vào tin.
+4. KHÔNG tự thêm động cơ hay tình trạng bán (bán gấp, cắt lỗ, chính chủ, ngoại giao, suất CĐT, giá hời...) nếu dữ liệu đầu vào không nói rõ.
+5. Thiếu thành tố nào của tiêu đề thì bỏ thành tố đó và bù đủ 90-99 ký tự bằng dữ kiện CÓ THẬT (phân khu, mã căn, loại hình, tiện ích thật). Không chèn các cụm "đẹp", "chính chủ", "sổ đỏ" nếu dữ liệu không nói vậy.`;
+
       const prompt = `Bạn là Giám đốc Soạn tin Bất Động Sản Cao Cấp tại Vũ Việt Property (VuVietHome.com.vn).
 Nhiệm vụ của bạn là soạn bộ tin đăng BĐS theo đúng BỘ QUY TẮC CHUẨN CỦA VŨ VIỆT PROPERTY TRÊN BATDONGSAN.COM.VN (Cập nhật 28/10/2026).
 
@@ -1259,20 +897,24 @@ ${contextInjection.injectedContextText}
 --- DỮ LIỆU ĐẦU VÀO CỦA CĂN NHÀ ---
 - Tên dự án CHÍNH THỨC: ${projectName}
 - Phân khu / Dãy / Căn: ${subdivision || contextInjection.matchedSubdivision || 'Chưa định rõ'}
-- Loại hình BĐS: ${propertyType || contextInjection.matchedProductType || 'Liền kề / Shophouse'}
-- Diện tích đất: ${area ? `${area}m2` : '65m2'}
-- Mặt tiền: ${frontage || 'MT 5m - 7m'}
-- Hướng nhà: ${orientation || 'Đông Nam hoặc Tây Nam'}
-- Số tầng / Xây dựng: ${floors || 'Xây 4-5 tầng'} ${constructionArea ? `(Tổng sàn: ${constructionArea})` : ''}
+- Loại hình BĐS: ${propertyType || 'Chưa cung cấp (không khẳng định loại hình)'}
+- Diện tích đất: ${area}m2
+- Mặt tiền: ${frontage || 'Chưa cung cấp (KHÔNG nhắc mặt tiền)'}
+- Hướng nhà: ${orientation || 'Chưa cung cấp (KHÔNG nhắc hướng)'}
+- Số tầng / Xây dựng: ${floors || 'Chưa cung cấp (KHÔNG nhắc số tầng)'} ${constructionArea ? `(Tổng sàn: ${constructionArea})` : ''}
 - Mức giá: ${price} ${pricePerM2 ? `(Đơn giá: ${pricePerM2})` : ''}
-- Pháp lý: ${legal || 'Sổ đỏ sở hữu lâu dài'}
+- Pháp lý: ${legal || 'Chưa cung cấp (KHÔNG khẳng định tình trạng sổ của căn này)'}
 - Tiện ích & Vị trí: ${amenities || contextInjection.matchedAmenities.slice(0, 3).join(', ')}
-- Điểm nhấn & Chính sách: ${keyHighlights || 'Hỗ trợ vay 70%, ân hạn 24 tháng'}
+- Điểm nhấn & Chính sách: ${keyHighlights || 'Chưa cung cấp (KHÔNG tự thêm chính sách vay, chiết khấu, voucher)'}
 ${appliedTitle ? `- Tiêu đề mẫu từ bước phân tích: "${appliedTitle}"` : ''}
 ${counterAngle ? `- Chiến lược phản công đối thủ: "${counterAngle}"` : ''}
 
 ${voiceGuidelines}
 ${learnedVoiceContext}
+
+${factRules}
+
+${marketBlock}
 
 --- CHỈ DẪN QUAN TRỌNG TỪ HỆ THỐNG CONTEXT INJECTION (ROUTER/MATCHER) ---
 1. Phân khu trọng tâm: "${contextInjection.matchedSubdivision || subdivision}". BẮT BUỘC viết đúng quy hoạch thực tế của phân khu này.
@@ -1287,7 +929,7 @@ ${contextInjection.matchedAmenities.map((a, i) => `   * ${a}`).join('\n')}
 2. BẮT BUỘC ĐỘ DÀI TỪ 90 ĐẾN TỐI ĐA 99 KÝ TỰ! (TUYỆT ĐỐI KHÔNG ĐƯỢC VƯỢT QUÁ 99 KÝ TỰ! Nếu tiêu đề từ 100 ký tự trở lên sẽ bị lỗi hệ thống và không dùng được!).
 3. Nhồi đủ 6 thành phần vào tiêu đề:
    [loại hình] + [phân khu] + [diện tích] + [hướng hoặc mặt tiền] + [giá] + [tên dự án đầy đủ]
-   Mẫu chuẩn tham khảo: "Giá 11,8 tỷ căn LK Xẻ Khe Kinh Đô 108m2 hướng Tây Nam MT 7m xây 5 tầng - Vinhomes Ocean Park 2" (94 ký tự)
+   Mẫu cấu trúc (chỉ minh họa, KHÔNG dùng số liệu trong mẫu): "Giá 11,8 tỷ căn LK Xẻ Khe Kinh Đô 108m2 hướng Tây Nam MT 7m xây 5 tầng - Vinhomes Ocean Park 2" (94 ký tự)
 4. TUYỆT ĐỐI KHÔNG emoji, KHÔNG ký tự đặc biệt (| , — , ★). Ngăn ý bằng dấu phẩy hoặc gạch ngang.
 
 --- QUY TẮC MÔ TẢ "VỪA 1 MÀN HÌNH LAPTOP" ---
@@ -1383,84 +1025,54 @@ Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ D
         }
       }
 
-      // If the AI call succeeded, sanitize titles and return parsed data
-      if (parsedResponse) {
-        const rawTitles: string[] = Array.isArray(parsedResponse.suggestedTitles) ? parsedResponse.suggestedTitles : [];
-        let final3Titles = rawTitles
-          .filter((t) => typeof t === 'string' && t.trim().length > 0)
-          .slice(0, 3)
-          .map((t) => formatStrict99Title(t, projectName));
-
-        // If fewer than 3 titles, supplement from deterministic engine
-        if (final3Titles.length < 3) {
-          const fallbackSet = generateRulebookListings({
-            projectName,
-            subdivision,
-            propertyType,
-            area,
-            price,
-            orientation,
-            frontage,
-            contactName: finalContactName,
-            phone: finalPhone,
-            personaVoice: activeVoice,
-          }).suggestedTitles;
-          for (const fb of fallbackSet) {
-            if (final3Titles.length < 3 && !final3Titles.includes(fb)) {
-              final3Titles.push(fb);
-            }
-          }
-        }
-
-        parsedResponse.suggestedTitles = final3Titles.slice(0, 3);
-
-        if (parsedResponse.versionInvestment?.title) {
-          parsedResponse.versionInvestment.title = formatStrict99Title(parsedResponse.versionInvestment.title, projectName);
-        }
-
-        return res.json({ success: true, data: parsedResponse });
+      if (!parsedResponse) {
+        console.warn('All AI models failed or timed out:', lastError?.message);
+        return res.status(502).json({
+          error: `AI chưa phản hồi được (${lastError?.message || 'hết thời gian chờ'}). Hãy bấm Soạn tin lại sau ít giây. App không tự chèn bản mẫu vì bản mẫu sẽ chứa thông tin không đúng với căn của bạn.`,
+        });
       }
 
-      // If all models failed (e.g. 503 high demand spike), use our Deterministic Rulebook Engine
-      console.warn('All AI models failed or timed out. Engaging Rulebook Listing Engine fallback...');
-      const fallbackListings = generateRulebookListings({
+      const rawTitles: string[] = Array.isArray(parsedResponse.suggestedTitles) ? parsedResponse.suggestedTitles : [];
+      let final3Titles = rawTitles
+        .filter((t) => typeof t === 'string' && t.trim().length > 0)
+        .slice(0, 3)
+        .map((t) => formatStrict99Title(t, projectName));
+      if (final3Titles.length === 0 && parsedResponse.versionInvestment?.title) {
+        final3Titles = [formatStrict99Title(parsedResponse.versionInvestment.title, projectName)];
+      }
+      parsedResponse.suggestedTitles = final3Titles;
+      if (parsedResponse.versionInvestment?.title) {
+        parsedResponse.versionInvestment.title = formatStrict99Title(parsedResponse.versionInvestment.title, projectName);
+      }
+
+      // Cross-check every figure in the output against what we gave the AI.
+      const kbFull = getKnowledgeBase(projectName);
+      const allowedText = [
+        JSON.stringify(req.body),
+        `Diện tích ${area}m2. ${pricePerM2 || ''}`,
+        contextInjection.injectedContextText,
+        kbFull.markdownContent,
+        JSON.stringify(mc || {}),
+        finalPhone,
+      ].join('\n');
+      const warnings = checkListing({
+        bdsTitle: parsedResponse.versionInvestment?.title || '',
+        bdsContent: parsedResponse.versionInvestment?.content || '',
+        otherTexts: [
+          parsedResponse.versionFamily?.title || '',
+          parsedResponse.versionFamily?.content || '',
+          parsedResponse.versionSocial?.title || '',
+          parsedResponse.versionSocial?.content || '',
+        ],
+        allowedText,
+        expectedPhone: finalPhone,
         projectName,
-        subdivision,
-        propertyType,
-        area,
-        bedrooms,
-        bathrooms,
-        price,
-        pricePerM2,
-        address,
-        legal,
-        amenities,
-        keyHighlights,
-        contactName: finalContactName,
-        phone: finalPhone,
-        personaVoice: activeVoice,
-        orientation,
-        frontage,
-        floors,
-        constructionArea,
-        appliedTitle,
       });
 
-      return res.json({
-        success: true,
-        data: fallbackListings,
-        fallback: true,
-        notice: 'Nội dung được tạo theo đúng Bộ Quy Tắc 28/10/2026 của Vũ Việt Property (chế độ bảo chứng ngoại tuyến).',
-      });
+      return res.json({ success: true, data: { ...parsedResponse, warnings } });
     } catch (error: any) {
       console.error('AI Generate Listings unexpected error:', error);
-      // Even in worst case, never return 500/503 to break sales workflow!
-      const safeListings = generateRulebookListings(req.body);
-      return res.json({
-        success: true,
-        data: safeListings,
-        fallback: true,
-      });
+      return res.status(500).json({ error: error?.message || 'Lỗi không xác định khi soạn tin.' });
     }
   });
 

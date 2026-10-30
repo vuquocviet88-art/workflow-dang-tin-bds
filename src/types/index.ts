@@ -118,6 +118,14 @@ export interface MarketResearchData {
       amenities: string;
     };
   }>;
+  // Present when the numbers come from real listings extracted from batdongsan result pages.
+  dataSource?: {
+    kind: 'real';
+    scrapedAt: string;
+    pages: number[];
+    rowCount: number;
+    aiNarrative: boolean; // true when the wording (not the numbers) was written by the AI
+  };
 }
 
 export interface ListingVersion {
@@ -130,6 +138,8 @@ export interface ListingVersion {
 }
 
 export interface GeneratedListings {
+  isOfflineFallback?: boolean; // true when the AI was NOT used (rule-based template text)
+  warnings?: string[]; // facts in the text that are not in the input data / knowledge base
   suggestedTitles: string[];
   versionInvestment: ListingVersion;
   versionFamily: ListingVersion;

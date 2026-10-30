@@ -11,7 +11,8 @@ import {
   NotionSyncHistoryItem,
   MarketResearchData
 } from './types';
-import { FOUR_VINHOMES_PROJECTS, ProjectPreset, SAMPLE_DRIVE_IMAGES } from './data/samplePresets';
+import { FOUR_VINHOMES_PROJECTS, ProjectPreset, SAMPLE_DRIVE_IMAGES, projectBaseForm } from './data/samplePresets';
+import type { MarketContext } from './lib/market';
 import { 
   CheckCircle, 
   ExternalLink,
@@ -26,7 +27,10 @@ export default function App() {
   const [selectedProject, setSelectedProject] = useState<ProjectPreset>(FOUR_VINHOMES_PROJECTS[0]);
 
   // Module 2 State: Project Form & Generated Listings
-  const [projectData, setProjectData] = useState<ProjectFormData>(FOUR_VINHOMES_PROJECTS[0].data);
+  const [projectData, setProjectData] = useState<ProjectFormData>(projectBaseForm(FOUR_VINHOMES_PROJECTS[0]));
+
+  // Real market data (scraped listings) summarised for the listing generator; null until the sale loads some.
+  const [marketContext, setMarketContext] = useState<MarketContext | null>(null);
   const [listings, setListings] = useState<GeneratedListings | null>(null);
   const [selectedVersionType, setSelectedVersionType] = useState<'investment' | 'family' | 'social'>('investment');
 
@@ -51,9 +55,13 @@ export default function App() {
   };
 
   const handleSelectProject = (project: ProjectPreset) => {
+    if (project.id !== selectedProject.id) {
+      // Only project-level fields are filled; every unit field (area, price, ...) starts empty.
+      setProjectData(projectBaseForm(project));
+      setMarketContext(null);
+    }
     setSelectedProject(project);
-    setProjectData(project.data);
-    showToast(`Đã chọn dự án: "${project.name}" & tự động nạp link Batdongsan.com.vn`);
+    showToast(`Đã chọn dự án: "${project.name}". Thông số căn để trống, hãy nhập thông tin căn thật.`);
   };
 
   // Helper when user selects from Part 2 (Counter Playbook) or Part 3 (3 Recommended Products)
@@ -118,6 +126,7 @@ export default function App() {
             selectedProject={selectedProject}
             onSelectProject={handleSelectProject}
             onApplyProductToEditor={handleApplyProductToEditor}
+            onMarketContextChange={setMarketContext}
             onNextStep={() => setActiveTab('content')}
           />
         )}
@@ -130,6 +139,7 @@ export default function App() {
             setListings={setListings}
             selectedVersionType={selectedVersionType}
             setSelectedVersionType={setSelectedVersionType}
+            marketContext={marketContext}
             onNextStep={() => setActiveTab('publish')}
           />
         )}
@@ -195,11 +205,11 @@ export default function App() {
 
           <div className="border-t border-[#1B3A2D] mt-5 pt-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-[#F5F2E9]/60">
             <div>
-              © 2026 Vũ Việt Home. Báo cáo phân tích thị trường thực tế sàn Batdongsan.com.vn.
+              © 2026 Vũ Việt Home. Số liệu thị trường là dữ liệu thật do bạn quét từ Batdongsan.com.vn.
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-[#C95928]" />
-              <span>Mô hình phân tích: Gemini Flash</span>
+              <span>Số liệu do máy tính thống kê, AI chỉ viết lời</span>
             </div>
           </div>
         </div>

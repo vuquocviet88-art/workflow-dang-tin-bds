@@ -717,9 +717,7 @@ export function matchAndInjectContext(params: MatcherInputParams): ContextInject
     }
   }
 
-  if (!matchedSubdivision && availableSubdivisions.length > 0) {
-    matchedSubdivision = availableSubdivisions[0].split(/[\(:—–\-]/)[0].trim();
-  }
+  // No match => leave empty. Guessing a subdivision would inject another subdivision's facts.
 
   // Extract specific subdivision paragraph from markdown safely without regex syntax errors
   if (matchedSubdivision) {
@@ -778,11 +776,11 @@ export function matchAndInjectContext(params: MatcherInputParams): ContextInject
 📌 DỰ ÁN: ${kb.name}
 📄 Tệp tri thức: ${kb.filename} (Ngày cập nhật: ${kb.updatedAt} | Phiên bản: ${kb.version})
 🎯 KẾT QUẢ BỘ LỌC ROUTER / MATCHER THÔNG MINH:
-- Phân khu trọng tâm khớp: ${matchedSubdivision || 'Phân khu trung tâm'}
+- Phân khu trọng tâm khớp: ${matchedSubdivision || 'Không khớp phân khu nào trong kho'}
 - Loại hình sản phẩm khớp: ${matchedProductType}
 
 [1. QUY HOẠCH & ĐẶC TÍNH PHÂN KHU ĐANG SOẠN]:
-${subSpecificText || `- Phân khu ${matchedSubdivision || rawSub}: Thuộc quy hoạch dự án ${kb.name}, đồng bộ tiện ích và hạ tầng cao cấp.`}
+${subSpecificText || `- Kho tri thức CHƯA có dữ liệu về phân khu "${rawSub || 'chưa nêu'}" của ${kb.name}: chỉ dùng thông tin người dùng đã cung cấp, không tự mô tả đặc điểm phân khu.`}
 
 [2. TIÊU CHUẨN XÂY DỰNG & LOẠI HÌNH (${matchedProductType})]:
 - Loại hình xác thực: ${matchedProductType}

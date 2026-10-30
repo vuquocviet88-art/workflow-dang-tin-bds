@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Sparkles, 
   ExternalLink, 
@@ -23,11 +23,54 @@ import {
   Database,
   Calendar,
   BrainCircuit,
-  Building2
+  Building2,
+  Trash2
 } from 'lucide-react';
 import { MarketResearchData, ProjectFormData } from '../types';
 import { ProjectPreset, FOUR_VINHOMES_PROJECTS } from '../data/samplePresets';
 import { CompetitorPlaybookAnalyzer } from './CompetitorPlaybookAnalyzer';
+import {
+  ListingRow,
+  MarketContext,
+  parseDatasetJson,
+  mergeRows,
+  computeMarketData,
+  buildMarketContext,
+} from '../lib/market';
+import { EXTRACT_SCRIPT, bookmarkletHref } from '../lib/bookmarklet';
+
+// The AI only supplies wording. Numbers always come from the real rows.
+function applyNarrative(base: MarketResearchData, n: any): MarketResearchData {
+  if (!n) return base;
+  return {
+    ...base,
+    vipStats: {
+      ...base.vipStats,
+      competitionAnalysis: [base.vipStats.competitionAnalysis, n.competitionAnalysis].filter(Boolean).join(' '),
+    },
+    contentCategories: base.contentCategories.map((c) => ({
+      ...c,
+      angles: n.categoryAngles?.find((a: any) => a.categoryName === c.categoryName)?.angles?.length
+        ? n.categoryAngles.find((a: any) => a.categoryName === c.categoryName).angles
+        : c.angles,
+    })),
+    historicalComparison: {
+      ...base.historicalComparison,
+      marketNotes: [base.historicalComparison.marketNotes, n.marketNotes].filter(Boolean).join(' '),
+    },
+    recommendations: base.recommendations.map((r) => {
+      const a = n.recommendations?.find((x: any) => x.id === r.id);
+      if (!a) return r;
+      return {
+        ...r,
+        whyRecommended: a.whyRecommended || r.whyRecommended,
+        sampleTitleBDS: a.sampleTitleBDS || r.sampleTitleBDS,
+        outlineBullets: a.outlineBullets?.length ? a.outlineBullets : r.outlineBullets,
+      };
+    }),
+    dataSource: base.dataSource ? { ...base.dataSource, aiNarrative: true } : base.dataSource,
+  };
+}
 
 interface ModuleResearchProps {
   selectedProject: ProjectPreset;
@@ -37,6 +80,7 @@ interface ModuleResearchProps {
     counterAngle?: string;
     sourceStrategy?: 'counter_playbook' | 'top_recommendation' | 'manual';
   }) => void;
+  onMarketContextChange?: (ctx: MarketContext | null) => void;
   onNextStep: () => void;
 }
 
@@ -44,6 +88,7 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
   selectedProject,
   onSelectProject,
   onApplyProductToEditor,
+  onMarketContextChange,
   onNextStep,
 }) => {
   // Sub-tabs: 'part1' (Top đầu dự án), 'part2' (Phân tích đồng nghiệp), 'part3' (Đề xuất 3 sản phẩm)
@@ -54,18 +99,109 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
 
   // URL state - auto-populated when project changes
   const [batdongsanUrl, setBatdongsanUrl] = useState(selectedProject.batdongsanUrl);
-  const [marketData, setMarketData] = useState<MarketResearchData>(selectedProject.marketData);
+  const [rows, setRows] = useState<ListingRow[]>([]);
+  const [scrapedAt, setScrapedAt] = useState('');
+  const [pasteText, setPasteText] = useState('');
+  const [narrative, setNarrative] = useState<any | null>(null);
+  const [narrating, setNarrating] = useState(false);
+  const [intakeNotice, setIntakeNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // When user selects a different project in Navbar, auto-populate the URL and market data
+  const storageKey = `vvh_rows_${selectedProject.id}`;
+
+  // When the project changes: load the rows previously scraped for it (never any sample data)
   useEffect(() => {
     setBatdongsanUrl(selectedProject.batdongsanUrl);
-    setMarketData(selectedProject.marketData);
-    setSelectedScope(selectedProject.marketData.pageScope || '3_pages');
     setError(null);
-  }, [selectedProject]);
+    setNarrative(null);
+    setIntakeNotice(null);
+    try {
+      const stored = localStorage.getItem(`vvh_rows_${selectedProject.id}`);
+      const parsed = stored ? JSON.parse(stored) : null;
+      setRows(Array.isArray(parsed?.rows) ? parsed.rows : []);
+      setScrapedAt(parsed?.scrapedAt || '');
+    } catch {
+      setRows([]);
+      setScrapedAt('');
+    }
+  }, [selectedProject.id]);
+
+  const persistRows = (nextRows: ListingRow[], at: string) => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ rows: nextRows, scrapedAt: at }));
+    } catch (e) {
+      console.warn('Cannot persist rows', e);
+    }
+  };
+
+  const baseMarketData = useMemo(
+    () => computeMarketData(rows, { projectName: selectedProject.name, batdongsanUrl, scrapedAt }),
+    [rows, selectedProject.name, batdongsanUrl, scrapedAt]
+  );
+  const hasData = rows.length > 0;
+  const marketData: MarketResearchData = useMemo(
+    () => (hasData ? applyNarrative(baseMarketData, narrative) : baseMarketData),
+    [hasData, baseMarketData, narrative]
+  );
+
+  useEffect(() => {
+    setSelectedScope(marketData.pageScope || '3_pages');
+  }, [marketData.pageScope]);
+
+  // Phase 3: hand the real market facts to the listing generator
+  useEffect(() => {
+    if (!onMarketContextChange) return;
+    onMarketContextChange(
+      hasData ? buildMarketContext(rows, { projectName: selectedProject.name, batdongsanUrl, scrapedAt }) : null
+    );
+  }, [hasData, rows, selectedProject.name, batdongsanUrl, scrapedAt]);
+
+  const handleAddData = () => {
+    setError(null);
+    try {
+      const parsed = parseDatasetJson(pasteText);
+      const merged = mergeRows(rows, parsed.rows);
+      const at = parsed.scrapedAt || new Date().toLocaleString('vi-VN');
+      setRows(merged);
+      setScrapedAt(at);
+      setNarrative(null); // the data changed, old wording no longer matches
+      persistRows(merged, at);
+      setPasteText('');
+      const pages = [...new Set(parsed.rows.map((r) => r.page))].join(', ');
+      setIntakeNotice(`Đã thêm ${parsed.rows.length} tin (trang ${pages}). Tổng đang có ${merged.length} tin.`);
+    } catch (err: any) {
+      setError(err?.message || 'Không đọc được dữ liệu dán vào.');
+    }
+  };
+
+  const handleClearData = () => {
+    setRows([]);
+    setScrapedAt('');
+    setNarrative(null);
+    setIntakeNotice(null);
+    persistRows([], '');
+  };
+
+  const handleNarrative = async () => {
+    setNarrating(true);
+    setError(null);
+    try {
+      const resp = await fetch('/api/market/narrative', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectName: selectedProject.name, batdongsanUrl: batdongsanUrl.trim(), scrapedAt, rows }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.error || `Lỗi ${resp.status}`);
+      setNarrative(data.data);
+    } catch (err: any) {
+      setError(err?.message || 'AI chưa viết được nhận định. Các con số thống kê vẫn đúng.');
+    } finally {
+      setNarrating(false);
+    }
+  };
 
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -87,7 +223,7 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
         vipSilver: page1.vipSilver,
         normal: page1.normal,
         vipPercentage: page1.vipPercentage,
-        label: 'Trang 1 (30 tin top đầu)',
+        label: `Trang 1 (${page1.totalListings} tin)`,
       };
     }
     if (selectedScope === '2_pages' && page1 && page2) {
@@ -104,65 +240,20 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
         vipSilver: silver,
         normal: normal,
         vipPercentage: Number(((vipTotal / total) * 100).toFixed(1)),
-        label: 'Top 2 Trang (60 tin)',
+        label: `Trang 1-2 (${total} tin)`,
       };
     }
     // Default 3 pages
     return {
-      totalListings: marketData.totalListingsCount || 90,
+      totalListings: marketData.totalListingsCount,
       vipDiamond: marketData.vipStats.vipDiamond,
       vipGold: marketData.vipStats.vipGold,
       vipSilver: marketData.vipStats.vipSilver,
       normal: marketData.vipStats.normal,
       vipPercentage: marketData.vipStats.vipPercentage,
-      label: 'Top 3 Trang Đầu Tiên (90 tin)',
+      label: `${marketData.dataSource?.pages.length || 0} trang đã quét (${marketData.totalListingsCount} tin)`,
     };
   }, [selectedScope, marketData, page1, page2, page3]);
-
-  const handleAnalyze = async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const resp = await fetch('/api/gemini/analyze-market', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectName: selectedProject.name,
-          batdongsanUrl: batdongsanUrl.trim(),
-          pageScope: selectedScope,
-        }),
-      });
-
-      const data = await resp.json();
-      if (!resp.ok) {
-        const errorMsg = data.error || '';
-        if (errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('RESOURCE_EXHAUSTED')) {
-          setMarketData(selectedProject.marketData);
-          setError('Hạn ngạch AI Gemini miễn phí hôm nay đã đạt giới hạn (Rate limit 20 lượt/ngày). Hệ thống đã tự động kích hoạt Kho Dữ Liệu Thị Trường BĐS Thực Tế của ' + selectedProject.name + ' để bạn tiếp tục làm việc liền mạch.');
-          return;
-        }
-        throw new Error(errorMsg || 'Có lỗi xảy ra khi phân tích thị trường');
-      }
-
-      setMarketData(data.data);
-      if (data.data?.isQuotaFallback) {
-        setError('Hệ thống đang hiển thị Kho Dữ Liệu Thực Tế Batdongsan.com.vn của ' + selectedProject.name + ' (Chế độ dự phòng thông minh khi AI đạt giới hạn ngạch miễn phí).');
-      }
-    } catch (err: any) {
-      console.error(err);
-      const msg = err?.message || '';
-      if (msg.includes('429') || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')) {
-        setMarketData(selectedProject.marketData);
-        setError('Hạn ngạch AI Gemini miễn phí hôm nay đã đạt giới hạn (Rate limit 20 lượt/ngày). Hệ thống đã kích hoạt Kho Dữ Liệu Thị Trường Thực Tế của ' + selectedProject.name + ' để đảm bảo công việc không bị gián đoạn.');
-      } else {
-        setMarketData(selectedProject.marketData);
-        setError('Đã tải dữ liệu thị trường thực tế dự phòng của ' + selectedProject.name + '.');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // Local snapshots state for historical comparison
   interface MarketSnapshot {
@@ -692,21 +783,32 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
                 className="flex-1 bg-[#FBFAF5] border border-[#DCD5C5] rounded-xl px-4 py-3 text-sm sm:text-base text-[#1B3A2D] font-mono focus:outline-none focus:ring-2 focus:ring-[#1B3A2D]/30 focus:border-[#1B3A2D]"
               />
               <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={batdongsanUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-5 py-3 bg-white hover:bg-[#F5F2E9] text-[#1B3A2D] font-bold text-sm sm:text-base rounded-xl border-2 border-[#1B3A2D] transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  <span>Mở trang Batdongsan</span>
+                </a>
+
                 <button
                   type="button"
-                  onClick={handleAnalyze}
-                  disabled={loading}
-                  className="px-6 py-3 bg-[#C95928] hover:bg-[#A8471F] text-white font-bold text-sm sm:text-base rounded-xl transition-all shadow-md shadow-[#C95928]/25 disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+                  onClick={handleNarrative}
+                  disabled={!hasData || narrating}
+                  className="px-5 py-3 bg-[#C95928] hover:bg-[#A8471F] text-white font-bold text-sm sm:text-base rounded-xl transition-all shadow-md shadow-[#C95928]/25 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 cursor-pointer"
+                  title="AI chỉ viết nhận định bằng lời; mọi con số do máy tính thống kê từ dữ liệu thật"
                 >
-                  {loading ? (
+                  {narrating ? (
                     <>
                       <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      <span>Đang phân tích...</span>
+                      <span>AI đang viết...</span>
                     </>
                   ) : (
                     <>
                       <Sparkles className="w-4 h-4" />
-                      <span>Phân Tích</span>
+                      <span>Viết nhận định AI</span>
                     </>
                   )}
                 </button>
@@ -714,7 +816,8 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
                 <button
                   type="button"
                   onClick={handleDownloadReport}
-                  className="px-4 py-3 bg-[#1B3A2D] hover:bg-[#2C5E4A] text-white font-bold text-sm sm:text-base rounded-xl transition-all flex items-center gap-2 cursor-pointer shadow-sm"
+                  disabled={!hasData}
+                  className="disabled:opacity-40 px-4 py-3 bg-[#1B3A2D] hover:bg-[#2C5E4A] text-white font-bold text-sm sm:text-base rounded-xl transition-all flex items-center gap-2 cursor-pointer shadow-sm"
                   title="Tải file báo cáo (.html) chuẩn A4 về máy tính"
                 >
                   <Download className="w-4 h-4 text-[#FBFAF5]" />
@@ -747,8 +850,101 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
             )}
           </div>
 
+          {/* ============ BƯỚC 1: LẤY DỮ LIỆU THẬT ============ */}
+          <div className="bg-white border-2 border-[#C95928]/40 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+            <div className="flex items-start gap-3">
+              <Database className="w-5 h-5 text-[#C95928] mt-0.5 shrink-0" />
+              <div>
+                <h4 className="font-bold font-serif-brand text-[#1B3A2D] text-lg">Lấy dữ liệu thật từ Batdongsan.com.vn</h4>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  Batdongsan chặn máy chủ tự đọc trang, và AI không thể tự vào link. Vì vậy bạn dùng chính trình duyệt của mình để lấy
+                  tin đang hiển thị (thường 30 tin mỗi trang), app sẽ tự đếm VIP, giá, môi giới. Không có dữ liệu thì app để trống, không bịa.
+                </p>
+              </div>
+            </div>
+
+            <ol className="text-sm text-[#333333] space-y-2 list-decimal list-inside leading-relaxed">
+              <li>
+                Kéo nút này lên thanh dấu trang (một lần duy nhất):{' '}
+                <a
+                  ref={(el) => el?.setAttribute('href', bookmarkletHref())}
+                  onClick={(e) => e.preventDefault()}
+                  draggable
+                  className="inline-block px-3 py-1 rounded-lg bg-[#1B3A2D] text-white font-bold cursor-grab"
+                >
+                  Lấy tin Batdongsan
+                </a>{' '}
+                <span className="text-slate-500">hoặc</span>{' '}
+                <button
+                  type="button"
+                  onClick={() => handleCopy(EXTRACT_SCRIPT, 'extract-script')}
+                  className="px-3 py-1 rounded-lg border border-[#DCD5C5] font-bold text-[#1B3A2D] cursor-pointer hover:bg-[#F5F2E9]"
+                >
+                  {copiedKey === 'extract-script' ? 'Đã copy script' : 'Copy script (dán vào Console F12)'}
+                </button>
+              </li>
+              <li>Bấm "Mở trang Batdongsan" ở trên, đứng ở trang kết quả (trang 1).</li>
+              <li>Bấm nút dấu trang "Lấy tin Batdongsan". Một hộp nhỏ hiện ra và dữ liệu đã được copy.</li>
+              <li>Quay lại đây, dán vào ô bên dưới rồi bấm "Thêm vào dữ liệu".</li>
+              <li>Lặp lại cho trang 2 và trang 3 (thêm /p2, /p3 vào cuối link). Mỗi trang bấm một lần, app tự gộp và loại tin trùng.</li>
+            </ol>
+
+            <textarea
+              value={pasteText}
+              onChange={(e) => setPasteText(e.target.value)}
+              placeholder='Dán dữ liệu vừa copy vào đây (bắt đầu bằng {"source":"batdongsan.com.vn",...)'
+              rows={3}
+              className="w-full bg-[#FBFAF5] border border-[#DCD5C5] rounded-xl px-3 py-2 text-xs font-mono text-[#1B3A2D] focus:outline-none focus:ring-2 focus:ring-[#1B3A2D]/30"
+            />
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleAddData}
+                disabled={!pasteText.trim()}
+                className="px-5 py-2.5 bg-[#1B3A2D] hover:bg-[#2C5E4A] text-white font-bold rounded-xl disabled:opacity-40 cursor-pointer"
+              >
+                Thêm vào dữ liệu
+              </button>
+              {hasData && (
+                <>
+                  <span className="text-sm font-bold text-[#1B3A2D] bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg">
+                    Đang có {rows.length} tin thật • trang {marketData.dataSource?.pages.join(', ')} • quét lúc {scrapedAt}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleClearData}
+                    className="px-3 py-2 text-sm font-bold text-rose-700 border border-rose-200 rounded-xl hover:bg-rose-50 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Xóa dữ liệu
+                  </button>
+                </>
+              )}
+            </div>
+
+            {intakeNotice && (
+              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm">{intakeNotice}</div>
+            )}
+            <p className="text-xs text-slate-500">
+              Lưu ý: Batdongsan che số điện thoại trên trang danh sách nên app không hiển thị SĐT; tên môi giới chỉ có trên tin VIP Kim Cương/Vàng.
+            </p>
+          </div>
+
+          {!hasData && (
+            <div className="p-6 rounded-2xl bg-[#F5F2E9] border border-[#E5E0D3] text-[#1B3A2D] text-sm sm:text-base">
+              Chưa có dữ liệu thật cho <strong>{selectedProject.name}</strong>. Báo cáo thị trường sẽ hiện ngay sau khi bạn thêm dữ liệu ở trên.
+            </div>
+          )}
+
           {/* ============ BÁO CÁO INFOGRAPHIC DASHBOARD TRONG 1 TRANG ============ */}
+          {hasData && (
           <div className="bg-[#FBFAF5] border-2 border-[#1B3A2D]/20 rounded-3xl p-5 sm:p-8 shadow-md space-y-6 print:border-none print:p-0">
+            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-sm">
+              <strong>Dữ liệu thật</strong> từ Batdongsan.com.vn, quét lúc {scrapedAt}: {marketData.totalListingsCount} tin, trang {marketData.dataSource?.pages.join(', ')}.
+              Mọi con số do máy tính thống kê.{' '}
+              {marketData.dataSource?.aiNarrative ? 'Phần nhận định bằng lời do AI viết (đã loại câu có số liệu lạ).' : 'Bấm "Viết nhận định AI" để có thêm phần nhận định bằng lời.'}
+            </div>
             {/* Infographic Header */}
             <div className="border-b border-[#E5E0D3] pb-5">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -796,7 +992,7 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
                   Phân Tích Top 3 Trang
                 </h4>
                 <span className="text-sm sm:text-base text-[#C95928] font-bold">
-                  Tổng 90 tin đăng dự án
+                  Tổng {marketData.totalListingsCount} tin đã quét
                 </span>
               </div>
 
@@ -1022,10 +1218,19 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
                         <div className="space-y-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <h5 className="font-bold text-base sm:text-lg text-[#1B3A2D]">{broker.name}</h5>
-                            <span className="text-sm sm:text-base font-bold text-[#C95928] flex items-center gap-1 font-mono">
-                              <Phone className="w-4 h-4" />
-                              {broker.phone}
-                            </span>
+                            {broker.profileUrl ? (
+                              <a
+                                href={broker.profileUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-sm font-bold text-[#C95928] flex items-center gap-1 underline"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                                Hồ sơ môi giới
+                              </a>
+                            ) : (
+                              <span className="text-xs text-slate-500">SĐT bị Batdongsan che</span>
+                            )}
                           </div>
                           <p className="text-sm sm:text-base text-[#333333] leading-relaxed">
                             <strong className="text-[#1B3A2D]">Chiến lược:</strong> {broker.keyStrategy}
@@ -1046,25 +1251,26 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
                           </span>
                         </div>
 
-                        {/* Nút Copy SĐT duy nhất */}
-                        <button
-                          type="button"
-                          onClick={() => handleCopy(broker.phone, `phone-${broker.rank}`)}
-                          className="px-4 py-2.5 bg-white hover:bg-[#1B3A2D] hover:text-white text-[#1B3A2D] border border-[#DCD5C5] rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-sm cursor-pointer group"
-                          title="Sao chép số điện thoại môi giới"
-                        >
-                          {copiedKey === `phone-${broker.rank}` ? (
-                            <>
-                              <Check className="w-4 h-4 text-emerald-600 group-hover:text-emerald-400" />
-                              <span className="text-emerald-700 group-hover:text-emerald-400">Đã copy SĐT</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-4 h-4 text-[#C95928] group-hover:text-[#FBFAF5]" />
-                              <span>Copy SĐT</span>
-                            </>
-                          )}
-                        </button>
+                        {broker.profileUrl && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(broker.profileUrl, `phone-${broker.rank}`)}
+                            className="px-4 py-2.5 bg-white hover:bg-[#1B3A2D] hover:text-white text-[#1B3A2D] border border-[#DCD5C5] rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-sm cursor-pointer"
+                            title="Sao chép link hồ sơ môi giới"
+                          >
+                            {copiedKey === `phone-${broker.rank}` ? (
+                              <>
+                                <Check className="w-4 h-4 text-emerald-600" />
+                                <span className="text-emerald-700">Đã copy link</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-4 h-4 text-[#C95928]" />
+                                <span>Copy link hồ sơ</span>
+                              </>
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1083,7 +1289,7 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
 
                 <div className="space-y-3.5">
                   {marketData.productsAndPricing.map((prod, idx) => {
-                    const totalCount = marketData.totalListingsCount || 90;
+                    const totalCount = marketData.totalListingsCount || 1;
                     const percent = ((prod.count / totalCount) * 100).toFixed(1);
                     return (
                       <div
@@ -1233,6 +1439,7 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
               </button>
             </div>
           </div>
+          )}
         </div>
       )}
 
@@ -1240,17 +1447,20 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
       {activeSubTab === 'part2' && (
         <CompetitorPlaybookAnalyzer
           selectedProject={selectedProject}
+          marketData={hasData ? marketData : null}
+          rows={rows}
           onApplyCounterTemplateToEditor={({ title, highlights, counterAngle }) => {
+            // Empty strings keep whatever the sale already typed; nothing about the unit is invented here.
             onApplyProductToEditor({
               projectName: selectedProject.data?.projectName || selectedProject.name,
-              area: selectedProject.data?.area || '70',
-              price: selectedProject.data?.price || '8.5 Tỷ',
-              pricePerM2: selectedProject.data?.pricePerM2 || '120 triệu/m²',
-              subdivision: selectedProject.data?.subdivision || 'Phân khu VIP',
-              propertyType: selectedProject.data?.propertyType || 'Liền kề / Shophouse',
-              highlights: highlights || 'Mẫu phản công trực diện hạ gục tin đối thủ - Định vị Quiet Luxury & Tài chính minh bạch',
-              legal: selectedProject.data?.legal || 'Sổ đỏ lâu dài sẵn sàng công chứng',
-              amenities: selectedProject.data?.amenities || 'Full tiện ích cao cấp đại đô thị',
+              area: '',
+              price: '',
+              pricePerM2: '',
+              subdivision: '',
+              propertyType: '',
+              highlights: highlights || '',
+              legal: '',
+              amenities: '',
               appliedTitle: title,
               counterAngle: counterAngle || highlights,
               sourceStrategy: 'counter_playbook',
@@ -1270,9 +1480,14 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
             </h3>
           </div>
 
+          {!hasData && (
+            <div className="p-6 rounded-2xl bg-[#F5F2E9] border border-[#E5E0D3] text-[#1B3A2D]">
+              Chưa có dữ liệu thật để đề xuất. Quay lại Phần 1, thêm dữ liệu quét từ Batdongsan.
+            </div>
+          )}
           {/* 3 Recommended Products Cards */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {marketData.recommendations.map((rec) => (
+            {(hasData ? marketData.recommendations : []).map((rec) => (
               <div
                 key={rec.id}
                 className="bg-white border-2 border-[#E5E0D3] hover:border-[#1B3A2D] rounded-2xl p-5 sm:p-6 flex flex-col justify-between shadow-sm transition-all group"
@@ -1325,7 +1540,7 @@ export const ModuleResearch: React.FC<ModuleResearchProps> = ({
                       &quot;{rec.sampleTitleBDS}&quot;
                     </p>
                     <span className="text-xs sm:text-sm text-slate-600 block font-medium">
-                      Độ dài: {rec.sampleTitleBDS.length}/99 ký tự (Đạt chuẩn tối ưu hiển thị)
+                      Độ dài: {rec.sampleTitleBDS.length}/99 ký tự. Số trong tiêu đề là trung vị thị trường để tham khảo; khi soạn tin hãy dùng số liệu căn thật.
                     </span>
                   </div>
 

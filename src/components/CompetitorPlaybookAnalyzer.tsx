@@ -26,11 +26,14 @@ import {
   Flame,
   ArrowUpRight
 } from 'lucide-react';
-import { CompetitorDeepPlaybook } from '../types';
-import { ProjectPreset, DEFAULT_COMPETITOR_PLAYBOOKS } from '../data/samplePresets';
+import { CompetitorDeepPlaybook, MarketResearchData } from '../types';
+import { ProjectPreset } from '../data/samplePresets';
+import type { ListingRow } from '../lib/market';
 
 interface CompetitorPlaybookAnalyzerProps {
   selectedProject: ProjectPreset;
+  marketData: MarketResearchData | null; // real, computed from scraped rows (null = nothing scraped yet)
+  rows: ListingRow[];
   onApplyCounterTemplateToEditor?: (template: { title: string; subdivision?: string; highlights?: string; counterAngle?: string }) => void;
   onNextStep?: () => void;
   onNavigateToPart3?: () => void;
@@ -38,37 +41,31 @@ interface CompetitorPlaybookAnalyzerProps {
 
 export const CompetitorPlaybookAnalyzer: React.FC<CompetitorPlaybookAnalyzerProps> = ({
   selectedProject,
+  marketData,
+  rows,
   onApplyCounterTemplateToEditor,
   onNextStep,
   onNavigateToPart3,
 }) => {
-  // Input form state
-  const defaultUrl = selectedProject.marketData.top5Brokers?.[0]?.profileUrl || 'https://batdongsan.com.vn';
-  const defaultBrokerName = selectedProject.marketData.top5Brokers?.[0]?.name || 'Đối thủ hàng đầu';
-
-  const [competitorUrl, setCompetitorUrl] = useState(defaultUrl);
-  const [competitorName, setCompetitorName] = useState(defaultBrokerName);
+  // Input form state. Nothing is pre-filled from sample data: the competitor comes from the real scraped rows.
+  const [competitorUrl, setCompetitorUrl] = useState('');
+  const [competitorName, setCompetitorName] = useState('');
+  const [selectedBrokerKey, setSelectedBrokerKey] = useState('');
   const [customNotes, setCustomNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'strategy' | 'pillars' | 'roadmap' | 'markdown'>('strategy');
+  const [playbook, setPlaybook] = useState<CompetitorDeepPlaybook | null>(null);
 
-  // Load default playbook or cached
-  const initialPlaybook = DEFAULT_COMPETITOR_PLAYBOOKS[selectedProject.id] || DEFAULT_COMPETITOR_PLAYBOOKS['ocean-park-2'];
-  const [playbook, setPlaybook] = useState<CompetitorDeepPlaybook>(initialPlaybook);
-
-  // When project changes, update default inputs
+  // A different project means different data: clear the previous analysis.
   useEffect(() => {
-    const topBroker = selectedProject.marketData.top5Brokers?.[0];
-    if (topBroker) {
-      setCompetitorUrl(topBroker.profileUrl || `https://batdongsan.com.vn/ban-nha-dat?q=${topBroker.phone.replace(/\s+/g, '')}`);
-      setCompetitorName(`${topBroker.name} (${topBroker.agency})`);
-    }
-    if (DEFAULT_COMPETITOR_PLAYBOOKS[selectedProject.id]) {
-      setPlaybook(DEFAULT_COMPETITOR_PLAYBOOKS[selectedProject.id]);
-    }
-  }, [selectedProject]);
+    setCompetitorUrl('');
+    setCompetitorName('');
+    setSelectedBrokerKey('');
+    setPlaybook(null);
+    setError(null);
+  }, [selectedProject.id]);
 
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -76,16 +73,22 @@ export const CompetitorPlaybookAnalyzer: React.FC<CompetitorPlaybookAnalyzerProp
     setTimeout(() => setCopiedKey(null), 2500);
   };
 
-  const handleSelectBrokerPreset = (broker: typeof selectedProject.marketData.top5Brokers[0]) => {
-    const url = broker.profileUrl || `https://batdongsan.com.vn/ban-nha-dat?q=${broker.phone.replace(/\s+/g, '')}`;
-    setCompetitorUrl(url);
-    setCompetitorName(`${broker.name} - ${broker.agency}`);
-    setCustomNotes(`Thế mạnh: ${broker.strengths}\nChiến lược: ${broker.keyStrategy}\nThị phần: ${broker.marketSharePercent}% với ${broker.totalListings} tin đăng`);
+  const brokerKeyOf = (b: { profileUrl: string; name: string }) => b.profileUrl.split('/pa/')[1] || b.name;
+
+  const handleSelectBroker = (broker: MarketResearchData['top5Brokers'][0]) => {
+    setSelectedBrokerKey(brokerKeyOf(broker));
+    setCompetitorUrl(broker.profileUrl);
+    setCompetitorName(broker.name);
+    setError(null);
   };
 
+  const brokerRows = selectedBrokerKey
+    ? rows.filter((r) => (r.brokerProfile || r.broker) === selectedBrokerKey)
+    : [];
+
   const handleAnalyze = async () => {
-    if (!competitorUrl.trim() && !customNotes.trim()) {
-      setError('Vui lòng nhập Link trang tin đối thủ hoặc trích dẫn tin đăng.');
+    if (brokerRows.length === 0 && !customNotes.trim()) {
+      setError('Cần dữ liệu thật của đối thủ: chọn một môi giới trong danh sách bên trên (từ dữ liệu đã quét ở Phần 1), hoặc dán các tin đăng của họ vào ô ghi chú.');
       return;
     }
 
@@ -101,26 +104,15 @@ export const CompetitorPlaybookAnalyzer: React.FC<CompetitorPlaybookAnalyzerProp
           competitorName: competitorName.trim(),
           projectName: selectedProject.name,
           customNotes: customNotes.trim(),
+          rows: brokerRows,
         }),
       });
 
-      const data = await resp.json();
-      if (!resp.ok) {
-        const fallback = DEFAULT_COMPETITOR_PLAYBOOKS[selectedProject.id] || DEFAULT_COMPETITOR_PLAYBOOKS['ha-long-xanh'] || DEFAULT_COMPETITOR_PLAYBOOKS['ocean-park-2'];
-        setPlaybook(fallback);
-        setError('Hạn ngạch AI Gemini miễn phí hôm nay đã đạt giới hạn (Rate limit 20 lượt/ngày). Hệ thống đã tự động kích hoạt Playbook Tình Báo Cạnh Tranh Thực Tế của ' + selectedProject.name + ' để bạn tiếp tục làm việc liền mạch.');
-        return;
-      }
-
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.error || `Lỗi ${resp.status}`);
       setPlaybook(data.data);
-      if (data.data?.isQuotaFallback) {
-        setError('Hệ thống đang hiển thị Playbook Đối Thủ từ kho dữ liệu phân tích thực tế của ' + selectedProject.name + ' (Chế độ dự phòng khi AI đạt giới hạn ngạch).');
-      }
     } catch (err: any) {
-      console.error(err);
-      const fallback = DEFAULT_COMPETITOR_PLAYBOOKS[selectedProject.id] || DEFAULT_COMPETITOR_PLAYBOOKS['ha-long-xanh'] || DEFAULT_COMPETITOR_PLAYBOOKS['ocean-park-2'];
-      setPlaybook(fallback);
-      setError('Đã tải Playbook đối thủ từ kho dữ liệu thực tế của ' + selectedProject.name + '.');
+      setError(err?.message || 'AI chưa phân tích được. Hãy thử lại.');
     } finally {
       setLoading(false);
     }
@@ -129,6 +121,7 @@ export const CompetitorPlaybookAnalyzer: React.FC<CompetitorPlaybookAnalyzerProp
   const handleDownloadMarkdown = () => {
     try {
       const dateStr = new Date().toISOString().slice(0, 10);
+      if (!playbook) return;
       const nameSlug = (playbook.competitorName || 'Doi-Thu').trim().replace(/[^a-zA-Z0-9]/g, '-');
       const blob = new Blob([playbook.markdownReport], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -157,30 +150,30 @@ export const CompetitorPlaybookAnalyzer: React.FC<CompetitorPlaybookAnalyzerProp
             Reverse-Engineering: Bóc Tách & Giải Mã Playbook Đối Thủ
           </h3>
           <p className="text-sm sm:text-base text-slate-600 mt-1 leading-relaxed">
-            Dán link trang tin / profile đối thủ trên Batdongsan.com.vn. Gemini Flash sẽ giải mã toàn bộ cơ chế traffic, công thức giật tít, đòn bẩy tâm lý và đưa ra chiến lược phản công chiếm lĩnh thị phần.
+            Chọn một môi giới trong dữ liệu thật đã quét ở Phần 1 (hoặc dán các tin đăng của họ). AI chỉ phân tích những tin thật đó: tiêu đề, giá, loại VIP, từ khóa. Phần nào danh sách không cho biết (traffic, Zalo/Facebook, tần suất đăng) sẽ ghi "Không có dữ liệu" thay vì đoán.
           </p>
         </div>
 
         {/* Quick select from Top 5 brokers of current project */}
-        {selectedProject.marketData.top5Brokers && selectedProject.marketData.top5Brokers.length > 0 && (
+        {marketData && marketData.top5Brokers.length > 0 && (
           <div className="bg-[#FBFAF5] p-4 rounded-2xl border border-[#E5E0D3] space-y-2.5">
             <span className="text-xs font-bold text-[#1B3A2D] uppercase tracking-wide flex items-center gap-1.5">
               <Users className="w-4 h-4 text-[#C95928]" />
-              <span>Gợi ý chọn nhanh từ Top 5 môi giới thống trị {selectedProject.name}:</span>
+              <span>Chọn một môi giới trong dữ liệu thật đã quét ({selectedProject.name}). App sẽ phân tích đúng các tin của họ:</span>
             </span>
             <div className="flex flex-wrap gap-2">
-              {selectedProject.marketData.top5Brokers.map((b) => (
+              {marketData.top5Brokers.map((b) => (
                 <button
                   key={b.rank}
                   type="button"
-                  onClick={() => handleSelectBrokerPreset(b)}
-                  className="px-3 py-1.5 rounded-xl bg-white hover:bg-[#1B3A2D] hover:text-white text-xs sm:text-sm font-semibold border border-[#DCD5C5] transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  onClick={() => handleSelectBroker(b)}
+                  className={`px-3 py-1.5 rounded-xl hover:bg-[#1B3A2D] hover:text-white text-xs sm:text-sm font-semibold border transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${selectedBrokerKey === brokerKeyOf(b) ? 'bg-[#1B3A2D] text-white border-[#1B3A2D]' : 'bg-white border-[#DCD5C5]'}`}
                 >
                   <span className="w-5 h-5 rounded-full bg-[#C95928] text-white text-[11px] font-bold flex items-center justify-center">
                     #{b.rank}
                   </span>
                   <span>{b.name}</span>
-                  <span className="text-slate-400 text-xs">({b.marketSharePercent}%)</span>
+                  <span className="text-slate-400 text-xs">({b.totalListings} tin)</span>
                 </button>
               ))}
             </div>
@@ -221,15 +214,15 @@ export const CompetitorPlaybookAnalyzer: React.FC<CompetitorPlaybookAnalyzerProp
             <label className="text-sm font-bold text-[#1B3A2D] flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <FileText className="w-4 h-4 text-[#C95928]" />
-                <span>Trích đoạn tin đăng / Tiêu đề / Ghi chú đối thủ (Tùy chọn để AI phân tích sâu):</span>
+                <span>Hoặc dán tin đăng / tiêu đề thật của đối thủ (nếu chưa chọn môi giới ở trên):</span>
               </span>
-              <span className="text-xs text-slate-400 font-normal">Càng chi tiết, AI mổ xẻ càng chuẩn</span>
+              <span className="text-xs text-slate-400 font-normal">Chỉ dán nội dung thật</span>
             </label>
             <textarea
               rows={2}
               value={customNotes}
               onChange={(e) => setCustomNotes(e.target.value)}
-              placeholder="Ví dụ paste 1-2 tiêu đề hoặc đoạn mô tả bài đăng của đối thủ: 'CHỦ THỞ OXY - Bán cắt lỗ 1.8 tỷ liền kề OCP2 Sao Biển, hỗ trợ vay 70%...'"
+              placeholder="Dán nguyên văn tiêu đề / mô tả các tin của đối thủ, mỗi tin một dòng"
               className="w-full bg-[#FBFAF5] border border-[#DCD5C5] rounded-xl px-4 py-2.5 text-sm sm:text-base text-[#1B3A2D] focus:outline-none focus:ring-2 focus:ring-[#1B3A2D]/30 resize-none"
             />
           </div>
@@ -255,7 +248,7 @@ export const CompetitorPlaybookAnalyzer: React.FC<CompetitorPlaybookAnalyzerProp
             {loading ? (
               <>
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                <span>Gemini đang mổ xẻ 4 trụ cột playbook...</span>
+                <span>AI đang phân tích tin của đối thủ...</span>
               </>
             ) : (
               <>
