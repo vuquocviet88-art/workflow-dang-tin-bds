@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { ai, Type, hasAiKey, DEFAULT_AI_MODEL } from './src/lib/ai.js';
 import { FOUR_VINHOMES_PROJECTS, DEFAULT_COMPETITOR_PLAYBOOKS } from './src/data/samplePresets.js';
 import { 
   matchAndInjectContext, 
@@ -16,19 +16,10 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Initialize Gemini Client
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    },
-  },
-});
+// AI goes through OpenRouter (see src/lib/ai.ts). Model is configurable via AI_MODEL.
+const AI_MODEL = process.env.AI_MODEL || DEFAULT_AI_MODEL;
 
-const GEMINI_MODEL = 'gemini-3.8-flash';
-
-// Fallback helper for Market Research when Gemini Free Tier quota is reached (429)
+// Fallback helper for Market Research when the AI call fails or hits quota
 function getFallbackMarketData(projectName: string, pageScope: string = '3_pages') {
   const norm = (projectName || '').toLowerCase();
   let matchedPreset = FOUR_VINHOMES_PROJECTS[0];
@@ -52,7 +43,7 @@ function getFallbackMarketData(projectName: string, pageScope: string = '3_pages
   return raw;
 }
 
-// Fallback helper for Competitor Playbook when Gemini Free Tier quota is reached (429)
+// Fallback helper for Competitor Playbook when the AI call fails or hits quota
 function getFallbackCompetitorPlaybook(projectName: string, competitorName?: string, competitorUrl?: string) {
   const norm = (projectName || '').toLowerCase();
   let key = 'ocean-park-2';
@@ -166,8 +157,8 @@ export function createApp() {
   app.get('/api/health', (req, res) => {
     res.json({
       status: 'ok',
-      hasApiKey: Boolean(process.env.GEMINI_API_KEY),
-      model: GEMINI_MODEL,
+      hasApiKey: hasAiKey(),
+      model: AI_MODEL,
       timestamp: new Date().toISOString(),
     });
   });
@@ -196,7 +187,7 @@ Phân tích toàn diện và trả về JSON theo đúng định dạng được
 6. keyExtractedData: Dự đoán hoặc trích xuất các thông số nếu có (tên dự án, phân khu, loại hình, diện tích, giá, địa chỉ, pháp lý) để có thể điền nhanh vào form.`;
 
       const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model: AI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -270,7 +261,7 @@ Phân tích toàn diện và trả về JSON theo đúng định dạng được
       const parsed = JSON.parse(response.text || '{}');
       res.json({ success: true, data: parsed });
     } catch (error: any) {
-      console.warn('Gemini Analyze quota/error, activating Smart Pre-computed Analysis:', error?.message);
+      console.warn('AI Analyze quota/error, activating Smart Pre-computed Analysis:', error?.message);
       const fallback = getFallbackAnalyze(req.body?.competitorInput || '');
       res.json({
         success: true,
@@ -321,7 +312,7 @@ Nhiệm vụ của bạn là đưa ra báo cáo phân tích thị trường chu�
    - specs: { projectName, area, price, pricePerM2, subdivision, propertyType, highlights, legal, amenities }`;
 
       const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model: AI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -476,7 +467,7 @@ Nhiệm vụ của bạn là đưa ra báo cáo phân tích thị trường chu�
         },
       });
     } catch (error: any) {
-      console.warn('Gemini Analyze Market quota/error, activating Smart Pre-computed Market Data for:', req.body?.projectName, error?.message);
+      console.warn('AI Analyze Market quota/error, activating Smart Pre-computed Market Data for:', req.body?.projectName, error?.message);
       const fallback = getFallbackMarketData(req.body?.projectName || 'Vinhomes Hạ Long Xanh', req.body?.pageScope || '3_pages');
       if (req.body?.batdongsanUrl) {
         fallback.batdongsanUrl = req.body.batdongsanUrl;
@@ -537,7 +528,7 @@ Your response must provide both structured dashboard fields AND a clean, compreh
 Language: Professional Vietnamese with standard real estate industry terms.`;
 
       const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model: AI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -668,7 +659,7 @@ Language: Professional Vietnamese with standard real estate industry terms.`;
         },
       });
     } catch (error: any) {
-      console.warn('Gemini Competitor Playbook quota/error, activating Smart Pre-computed Playbook for:', req.body?.projectName, error?.message);
+      console.warn('AI Competitor Playbook quota/error, activating Smart Pre-computed Playbook for:', req.body?.projectName, error?.message);
       const fallback = getFallbackCompetitorPlaybook(
         req.body?.projectName || 'Vinhomes Hạ Long Xanh',
         req.body?.competitorName,
@@ -765,7 +756,7 @@ HƯỚNG DẪN TRÍCH XUẤT VÀ SUY LUẬN:
     - Liệt kê các câu hỏi trợ lý cần hỏi lại nếu thiếu trường quan trọng hoặc cần làm rõ.`;
 
       const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model: AI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -834,7 +825,7 @@ HƯỚNG DẪN TRÍCH XUẤT VÀ SUY LUẬN:
         data: parsed,
       });
     } catch (error: any) {
-      console.warn('Gemini Parse Raw Listing error, using smart regex fallback:', error?.message);
+      console.warn('AI Parse Raw Listing error, using smart regex fallback:', error?.message);
       
       // Smart Rule-based Fallback Parser
       const rawText: string = req.body.rawText || '';
@@ -1318,13 +1309,17 @@ Hãy xuất chính xác 3 phiên bản đăng tin:
 Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ DÀI TỐI ĐA 99 KÝ TỰ (BẮT BUỘC TỪ 90 ĐẾN 99 KÝ TỰ) cho Batdongsan.com.vn và metaDescription (150-160 ký tự).`;
 
       // Multi-model fallback list in order of preference
-      const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+      const candidateModels = [AI_MODEL, process.env.AI_FALLBACK_MODEL].filter((m): m is string => Boolean(m));
+      const deadline = Date.now() + 55_000; // Vercel maxDuration is 60s
       let lastError: any = null;
       let parsedResponse: any = null;
 
       for (const mName of candidateModels) {
         try {
-          const callPromise = ai.models.generateContent({
+          const remainingMs = deadline - Date.now();
+          if (remainingMs < 5_000) break;
+          const response: any = await ai.models.generateContent({
+            timeoutMs: Math.min(45_000, remainingMs),
             model: mName,
             contents: prompt,
             config: {
@@ -1378,12 +1373,6 @@ Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ D
             },
           });
 
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Model timeout 8s')), 8000)
-          );
-
-          const response: any = await Promise.race([callPromise, timeoutPromise]);
-
           if (response.text) {
             parsedResponse = JSON.parse(response.text);
             break;
@@ -1394,7 +1383,7 @@ Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ D
         }
       }
 
-      // If Gemini succeeded, sanitize titles and return parsed data
+      // If the AI call succeeded, sanitize titles and return parsed data
       if (parsedResponse) {
         const rawTitles: string[] = Array.isArray(parsedResponse.suggestedTitles) ? parsedResponse.suggestedTitles : [];
         let final3Titles = rawTitles
@@ -1433,7 +1422,7 @@ Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ D
       }
 
       // If all models failed (e.g. 503 high demand spike), use our Deterministic Rulebook Engine
-      console.warn('All Gemini models encountered high demand spikes. Engaging Rulebook Listing Engine fallback...');
+      console.warn('All AI models failed or timed out. Engaging Rulebook Listing Engine fallback...');
       const fallbackListings = generateRulebookListings({
         projectName,
         subdivision,
@@ -1464,7 +1453,7 @@ Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ D
         notice: 'Nội dung được tạo theo đúng Bộ Quy Tắc 28/10/2026 của Vũ Việt Property (chế độ bảo chứng ngoại tuyến).',
       });
     } catch (error: any) {
-      console.error('Gemini Generate Listings unexpected error:', error);
+      console.error('AI Generate Listings unexpected error:', error);
       // Even in worst case, never return 500/503 to break sales workflow!
       const safeListings = generateRulebookListings(req.body);
       return res.json({
@@ -1693,7 +1682,7 @@ Mỗi danh mục nêu rõ:
 Trả về JSON.`;
 
       const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model: AI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -1728,7 +1717,7 @@ Trả về JSON.`;
       const data = JSON.parse(response.text || '{}');
       res.json({ success: true, data });
     } catch (err: any) {
-      console.warn('Gemini photo suggest error:', err);
+      console.warn('AI photo suggest error:', err);
       res.status(500).json({ error: err?.message || 'Lỗi gợi ý bộ ảnh từ AI.' });
     }
   });
