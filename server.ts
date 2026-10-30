@@ -1310,7 +1310,7 @@ Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ D
 
       // Multi-model fallback list in order of preference
       const candidateModels = [AI_MODEL, process.env.AI_FALLBACK_MODEL].filter((m): m is string => Boolean(m));
-      const deadline = Date.now() + 55_000; // Vercel maxDuration is 60s
+      const deadline = Date.now() + 110_000; // keep under Vercel maxDuration (120s, see vercel.json)
       let lastError: any = null;
       let parsedResponse: any = null;
 
@@ -1319,7 +1319,7 @@ Ngoài ra, cung cấp danh sách ĐÚNG 3 suggestedTitles ĐẠT CHUẨN ĐỘ D
           const remainingMs = deadline - Date.now();
           if (remainingMs < 5_000) break;
           const response: any = await ai.models.generateContent({
-            timeoutMs: Math.min(45_000, remainingMs),
+            timeoutMs: Math.min(100_000, remainingMs),
             model: mName,
             contents: prompt,
             config: {

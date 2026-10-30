@@ -1,5 +1,5 @@
-// AI client for the server: OpenRouter (OpenAI-compatible chat completions API).
-// Exposes `ai.models.generateContent(...)` so the endpoints in server.ts keep their call shape.
+// AI client for the server: any OpenAI-compatible chat completions API (OpenRouter by default,
+// or e.g. RevidAPI via AI_BASE_URL). Exposes `ai.models.generateContent(...)` so the endpoints in server.ts keep their call shape.
 
 // JSON-schema type names, used to describe the structured response of each endpoint.
 export const Type = {
@@ -13,8 +13,21 @@ export const Type = {
 export const DEFAULT_AI_MODEL = 'anthropic/claude-sonnet-5.5';
 
 // Env is read at call time: server.ts runs dotenv.config() after its imports are evaluated.
+const apiKey = () => process.env.AI_API_KEY || process.env.OPENROUTER_API_KEY;
+const baseUrl = () =>
+  (process.env.AI_BASE_URL || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
+
 export function hasAiKey(): boolean {
-  return Boolean(process.env.OPENROUTER_API_KEY);
+  return Boolean(apiKey());
+}
+
+// 'native': send the schema as response_format (OpenRouter honours it).
+// 'prompt': put the schema in the prompt (providers that ignore response_format, e.g. RevidAPI).
+// Override with AI_SCHEMA_MODE; otherwise native only for openrouter.ai.
+function schemaMode(): 'native' | 'prompt' {
+  const forced = process.env.AI_SCHEMA_MODE;
+  if (forced === 'native' || forced === 'prompt') return forced;
+  return baseUrl().includes('openrouter.ai') ? 'native' : 'prompt';
 }
 
 interface GenerateParams {
@@ -34,15 +47,14 @@ function withNoExtraProps(schema: any): any {
   return out;
 }
 
-async function callOpenRouter(body: any, timeoutMs: number): Promise<{ ok: boolean; status: number; data: any }> {
-  const baseUrl = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
+async function callAi(body: any, timeoutMs: number): Promise<{ ok: boolean; status: number; data: any }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(`${baseUrl}/chat/completions`, {
+    const resp = await fetch(`${baseUrl()}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${apiKey()}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': process.env.APP_URL || 'https://workflow-dang-tin-bds.vercel.app',
         'X-Title': 'Workflow Dang Tin BDS',
@@ -64,14 +76,14 @@ function stripJsonFence(text: string): string {
   return text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
 }
 
-async function generateContent({ model, contents, config, timeoutMs = 50_000 }: GenerateParams): Promise<{ text: string }> {
-  if (!hasAiKey()) throw new Error('OPENROUTER_API_KEY chưa được cấu hình.');
+async function generateContent({ model, contents, config, timeoutMs = 100_000 }: GenerateParams): Promise<{ text: string }> {
+  if (!hasAiKey()) throw new Error('AI_API_KEY (hoặc OPENROUTER_API_KEY) chưa được cấu hình.');
 
   const schema = config?.responseSchema ? withNoExtraProps(config.responseSchema) : null;
   const base = { model, max_tokens: 8000, temperature: 0.7 };
 
   const attempt = (useSchema: boolean) =>
-    callOpenRouter(
+    callAi(
       {
         ...base,
         messages: [
@@ -89,16 +101,16 @@ async function generateContent({ model, contents, config, timeoutMs = 50_000 }: 
       timeoutMs
     );
 
-  let res = await attempt(true);
+  let res = await attempt(schemaMode() === 'native');
   // Provider rejected the schema (unsupported keyword etc.): retry with the schema in the prompt.
-  if (!res.ok && res.status === 400 && schema) res = await attempt(false);
+  if (!res.ok && res.status === 400 && schema && schemaMode() === 'native') res = await attempt(false);
 
   if (!res.ok) {
-    const msg = res.data?.error?.message || `OpenRouter lỗi ${res.status}`;
-    throw new Error(`OpenRouter ${res.status}: ${msg}`);
+    const msg = res.data?.error?.message || `AI lỗi ${res.status}`;
+    throw new Error(`AI ${res.status}: ${msg}`);
   }
   const content = res.data?.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || !content.trim()) throw new Error('OpenRouter trả về nội dung rỗng.');
+  if (typeof content !== 'string' || !content.trim()) throw new Error('AI trả về nội dung rỗng.');
   return { text: stripJsonFence(content) };
 }
 
